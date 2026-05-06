@@ -469,33 +469,112 @@ def search_index(index: dict[str, str], query: str) -> list[dict]:
     return results[:SEARCH_MAX_RESULTS]
 
 
+# ─── Spec resolution ───────────────────────────────────────────────────────
+
+def resolve_spec(spec: str) -> dict:
+    """
+    Resolve a CLI/UI input string to a serveable target. Performs cloning /
+    PR checkout as needed and returns:
+        {target, restrict_to, github_context, pr_review_comments, root_label,
+         owns_target}  # owns_target: True if we created a tempdir to clean up
+    """
+    pr = github_pr_spec(spec)
+    if pr is not None:
+        owner, repo, num = pr
+        target, changed, gh_ctx, comments = fetch_pr(owner, repo, num)
+        return {
+            "target": target,
+            "restrict_to": set(changed) | {"_PR.md"},
+            "github_context": gh_ctx,
+            "pr_review_comments": comments,
+            "root_label": f"{owner}/{repo}#{num}",
+            "owns_target": True,
+        }
+    gh_url = github_clone_url(spec)
+    if gh_url is not None:
+        target = clone_github(gh_url)
+        return {
+            "target": target,
+            "restrict_to": None,
+            "github_context": detect_repo_github_context(target),
+            "pr_review_comments": {},
+            "root_label": target.name,
+            "owns_target": True,
+        }
+    target = Path(spec).expanduser()
+    if not target.is_absolute():
+        target = (Path.cwd() / target).resolve()
+    if not target.exists():
+        raise SystemExit(f"mdbrowse: not found: {target}")
+    if not target.is_dir():
+        raise SystemExit(f"mdbrowse: not a directory: {target}")
+    return {
+        "target": target,
+        "restrict_to": None,
+        "github_context": detect_repo_github_context(target),
+        "pr_review_comments": {},
+        "root_label": target.name,
+        "owns_target": False,
+    }
+
+
 # ─── HTTP server ───────────────────────────────────────────────────────────
 
-def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = None,
-                 root_label: str | None = None,
-                 github_context: dict | None = None,
-                 pr_review_comments: dict[str, list[dict]] | None = None) -> None:
+def serve_app(initial: dict | None, md_only: bool) -> None:
+    """
+    Serve the file-browser app. Starts even with no `initial` target — the
+    user can paste a PR/repo/path URL into the toolbar to load one. Subsequent
+    swaps via /__mdbrowse__/load reuse the same server.
+    """
     port = free_port()
-    display_root = root_label or target.name
-    pr_review_comments = pr_review_comments or {}
-
-    # Tree + md index are recomputed on demand so the Refresh button picks
-    # up newly-added files without restarting the server.
     state_lock = threading.Lock()
-    state: dict = {"files": [], "md_index": {}}
+    state: dict = {
+        "target": None,
+        "restrict_to": None,
+        "github_context": None,
+        "pr_review_comments": {},
+        "display_root": "(nothing loaded)",
+        "files": [],
+        "md_index": {},
+        "owns_target": False,
+    }
+
+    def apply_resolved(resolved: dict) -> None:
+        files = list_files(resolved["target"], restrict_to=resolved["restrict_to"])
+        md_index = build_md_index(resolved["target"], files)
+        with state_lock:
+            old_target = state["target"]
+            old_owned = state["owns_target"]
+            state.update({
+                "target": resolved["target"],
+                "restrict_to": resolved["restrict_to"],
+                "github_context": resolved["github_context"],
+                "pr_review_comments": resolved["pr_review_comments"],
+                "display_root": resolved["root_label"],
+                "owns_target": resolved["owns_target"],
+                "files": files,
+                "md_index": md_index,
+            })
+        # Free the previous tempdir if we owned it.
+        if old_owned and old_target and old_target != resolved["target"]:
+            shutil.rmtree(old_target, ignore_errors=True)
+
+    if initial:
+        apply_resolved(initial)
 
     def refresh_state() -> dict:
-        files = list_files(target, restrict_to=restrict_to)
+        target = state["target"]
+        if not target:
+            return {"files": [], "md_index": {}}
+        files = list_files(target, restrict_to=state["restrict_to"])
         md_index = build_md_index(target, files)
         with state_lock:
             state["files"] = files
             state["md_index"] = md_index
         return {"files": files, "md_index": md_index}
 
-    refresh_state()
-
     class MdbrowseHandler(http.server.SimpleHTTPRequestHandler):
-        # Quiet the per-request stderr spam.
+        # Quiet per-request stderr spam.
         def log_message(self, *args, **kwargs) -> None:
             pass
 
@@ -511,18 +590,51 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
             self._send_bytes(json.dumps(payload).encode("utf-8"),
                              "application/json", status)
 
-        def do_POST(self) -> None:
-            split = urlsplit(self.path)
-            if split.path != "/__mdbrowse__/post-comment":
-                self._send_json({"error": "not found"}, 404)
-                return
-            if not github_context or not github_context.get("prNumber"):
-                self._send_json({"error": "post-comment is only available in PR mode"}, 400)
-                return
+        def _read_json_body(self) -> dict | None:
             length = int(self.headers.get("Content-Length") or 0)
             try:
-                body = json.loads(self.rfile.read(length) or b"{}")
+                return json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
+                return None
+
+        def do_POST(self) -> None:
+            split = urlsplit(self.path)
+            if split.path == "/__mdbrowse__/load":
+                self._handle_load()
+                return
+            if split.path == "/__mdbrowse__/post-comment":
+                self._handle_post_comment()
+                return
+            self._send_json({"error": "not found"}, 404)
+
+        def _handle_load(self) -> None:
+            body = self._read_json_body()
+            if body is None:
+                self._send_json({"error": "invalid JSON"}, 400)
+                return
+            spec = (body.get("spec") or "").strip()
+            if not spec:
+                self._send_json({"error": "spec required"}, 400)
+                return
+            try:
+                resolved = resolve_spec(spec)
+            except SystemExit as e:
+                self._send_json({"error": str(e)}, 400)
+                return
+            except Exception as e:
+                self._send_json({"error": f"load failed: {e}"}, 500)
+                return
+            apply_resolved(resolved)
+            print(f"mdbrowse: switched to  {resolved['root_label']}")
+            self._send_json({"ok": True, "root": resolved["root_label"]})
+
+        def _handle_post_comment(self) -> None:
+            ghctx = state["github_context"]
+            if not ghctx or not ghctx.get("prNumber"):
+                self._send_json({"error": "post-comment is only available in PR mode"}, 400)
+                return
+            body = self._read_json_body()
+            if body is None:
                 self._send_json({"error": "invalid JSON"}, 400)
                 return
             file_path = body.get("path")
@@ -531,16 +643,12 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
             if not file_path or not isinstance(line_num, int) or not comment.strip():
                 self._send_json({"error": "path, line (int), and body are required"}, 400)
                 return
-            owner = github_context["owner"]
-            repo = github_context["repo"]
-            num = github_context["prNumber"]
-            commit_id = github_context["headRef"]
             args = [
                 "gh", "api",
-                f"repos/{owner}/{repo}/pulls/{num}/comments",
+                f"repos/{ghctx['owner']}/{ghctx['repo']}/pulls/{ghctx['prNumber']}/comments",
                 "-X", "POST",
                 "-f", f"body={comment}",
-                "-f", f"commit_id={commit_id}",
+                "-f", f"commit_id={ghctx['headRef']}",
                 "-f", f"path={file_path}",
                 "-F", f"line={line_num}",
                 "-f", "side=RIGHT",
@@ -558,7 +666,6 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
             except json.JSONDecodeError:
                 self._send_json({"error": "could not parse gh api response"}, 502)
                 return
-            # Update in-memory cache so future tree.json includes the new comment.
             new_entry = {
                 "line": payload.get("line") or payload.get("original_line") or line_num,
                 "body": payload.get("body") or comment,
@@ -566,10 +673,11 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
                 "createdAt": payload.get("created_at") or "",
                 "htmlUrl": payload.get("html_url") or "",
             }
-            pr_review_comments.setdefault(file_path, []).append(new_entry)
-            pr_review_comments[file_path].sort(
-                key=lambda c: ((c.get("line") or 0), c.get("createdAt") or "")
-            )
+            with state_lock:
+                state["pr_review_comments"].setdefault(file_path, []).append(new_entry)
+                state["pr_review_comments"][file_path].sort(
+                    key=lambda c: ((c.get("line") or 0), c.get("createdAt") or "")
+                )
             self._send_json({"ok": True, "comment": new_entry})
 
         def do_GET(self) -> None:
@@ -578,11 +686,12 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
             if path == "/__mdbrowse__/tree.json":
                 fresh = refresh_state()
                 meta = {
-                    "root": display_root,
+                    "root": state["display_root"],
                     "files": fresh["files"],
-                    "rootAbs": str(target),
-                    "github": github_context or None,
-                    "prReviewComments": pr_review_comments,
+                    "rootAbs": str(state["target"]) if state["target"] else None,
+                    "github": state["github_context"],
+                    "prReviewComments": state["pr_review_comments"],
+                    "loaded": state["target"] is not None,
                 }
                 self._send_bytes(json.dumps(meta).encode("utf-8"), "application/json")
                 return
@@ -598,18 +707,25 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
                 body = json.dumps({"query": q, "results": search_index(idx, q)})
                 self._send_bytes(body.encode("utf-8"), "application/json")
                 return
+            # File fetch — translate against the currently-loaded target.
+            target = state["target"]
+            if target is None:
+                self.send_error(404, "no folder loaded")
+                return
+            self.directory = str(target)
             return super().do_GET()
 
-    handler = functools.partial(MdbrowseHandler, directory=str(target))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
-
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), MdbrowseHandler)
     flag = "0" if not md_only else "1"
     url = f"http://127.0.0.1:{port}/__mdbrowse__/index.html?serve=1&mdOnly={flag}"
 
-    print(f"mdbrowse: serving  {target}")
+    if state["target"]:
+        print(f"mdbrowse: serving  {state['target']}")
+        print(f"mdbrowse: indexed  {len(state['md_index'])} markdown file(s) for content search")
+    else:
+        print(f"mdbrowse: idle — paste a PR / repo / path in the app to load one")
     print(f"mdbrowse: app at   {url}")
-    print(f"mdbrowse: indexed  {len(state['md_index'])} markdown file(s) for content search")
-    print(f"mdbrowse: Ctrl+C to stop  (use the 🔄 button in the app to pick up new files)")
+    print(f"mdbrowse: Ctrl+C to stop")
 
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
@@ -621,6 +737,22 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
         server.shutdown()
 
 
+# Backward-compat alias used by older callers.
+def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = None,
+                 root_label: str | None = None,
+                 github_context: dict | None = None,
+                 pr_review_comments: dict[str, list[dict]] | None = None) -> None:
+    initial = {
+        "target": target,
+        "restrict_to": restrict_to,
+        "github_context": github_context,
+        "pr_review_comments": pr_review_comments or {},
+        "root_label": root_label or target.name,
+        "owns_target": False,
+    }
+    serve_app(initial, md_only)
+
+
 def main() -> int:
     args = parse_args()
     md_only = not args.all
@@ -629,48 +761,26 @@ def main() -> int:
         print(f"mdbrowse: app not found at {APP_HTML}", file=sys.stderr)
         return 2
 
+    # No-arg: start the server with no target loaded; the user can paste a
+    # PR / repo / path in the app's toolbar to load one.
     if args.path is None:
-        flag = "0" if not md_only else "1"
-        open_chrome(f"file://{APP_HTML}?mdOnly={flag}")
+        serve_app(None, md_only)
         return 0
 
-    # GitHub PR? Check first — PR specs (owner/repo#N) would otherwise be
-    # mis-detected as repos by github_clone_url.
-    pr = github_pr_spec(args.path)
-    if pr is not None:
-        owner, repo, num = pr
-        target, changed, gh_ctx, line_comments = fetch_pr(owner, repo, num)
-        restrict = set(changed) | {"_PR.md"}
-        label = f"{owner}/{repo}#{num}"
-        serve_folder(target, md_only,
-                     restrict_to=restrict, root_label=label,
-                     github_context=gh_ctx, pr_review_comments=line_comments)
-        return 0
+    # Single local file: Chrome handles HTML/PDF/images natively. For .md /
+    # .py / etc. Chrome just shows raw text; running the full server for one
+    # file is over-kill, so we just open the file directly.
+    direct = Path(args.path).expanduser()
+    if direct.is_absolute() or direct.exists():
+        if not direct.is_absolute():
+            direct = (Path.cwd() / direct).resolve()
+        if direct.is_file():
+            open_chrome(f"file://{direct}")
+            return 0
 
-    # GitHub repo? Clone first, then fall through to folder serving.
-    gh_url = github_clone_url(args.path)
-    if gh_url is not None:
-        target = clone_github(gh_url)
-        serve_folder(target, md_only,
-                     github_context=detect_repo_github_context(target))
-        return 0
-
-    target = Path(args.path).expanduser()
-    if not target.is_absolute():
-        target = (Path.cwd() / target).resolve()
-    if not target.exists():
-        print(f"mdbrowse: not found: {target}", file=sys.stderr)
-        return 1
-
-    if target.is_file():
-        # Single file — Chrome handles HTML/PDF/images natively. For .md, .py,
-        # etc. Chrome shows raw text; the app's renderers don't apply. Routing
-        # a single file through the served-folder mode would be over-kill.
-        open_chrome(f"file://{target}")
-        return 0
-
-    serve_folder(target, md_only,
-                 github_context=detect_repo_github_context(target))
+    # Otherwise resolve the spec (PR / repo / dir) and serve.
+    initial = resolve_spec(args.path)
+    serve_app(initial, md_only)
     return 0
 
 

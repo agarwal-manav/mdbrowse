@@ -468,6 +468,12 @@
   <div class="toolbar">
     <button id="open-folder">📁 Open Folder</button>
     <button id="open-file">📄 Open File</button>
+    <form id="load-form" style="display:flex;gap:6px;align-items:center;">
+      <input type="text" id="load-input" placeholder="Load a PR / repo / path…"
+             title="Paste owner/repo, owner/repo#N, a github.com URL, or a local path"
+             style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:5px 10px;border-radius:6px;font:inherit;font-size:13px;width:280px;">
+      <button type="submit" id="load-btn">Load</button>
+    </form>
     <button id="refresh" hidden title="Re-scan the served folder for new/changed files">🔄 Refresh</button>
     <button id="open-on-github" hidden title="Open the current file on GitHub at this PR's head">↗ GitHub</button>
     <button id="toggle-mode" hidden title="Switch between rendered view and line-by-line source with inline review comments">💬 Comment mode</button>
@@ -1247,6 +1253,39 @@ function createComposerEl(path, lineNum, onPosted) {
   return composer;
 }
 
+// ─── Load form (PR / repo / path) ──────────────────────────────────────────
+document.getElementById('load-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('load-input');
+  const btn = document.getElementById('load-btn');
+  const spec = input.value.trim();
+  if (!spec) return;
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Loading…';
+  try {
+    const res = await fetch('/__mdbrowse__/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spec }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      alert(data.error || ('load failed: ' + res.status));
+      return;
+    }
+    input.value = '';
+    // Reset per-file viewer state and re-pull the tree.
+    currentPath = null; selectedRow = null;
+    document.getElementById('content').innerHTML =
+      `<div class="empty"><div style="font-size:48px;">⏳</div><div>Loading ${data.root}…</div></div>`;
+    await loadServedTree({ silent: false });
+  } catch (err) {
+    alert(err.message || String(err));
+  } finally {
+    btn.disabled = false; btn.textContent = prev;
+  }
+});
+
 // ─── Width toggle (Narrow → Wide → Full) ──────────────────────────────────
 const WIDTHS = ['narrow', 'wide', 'full'];
 const WIDTH_LABEL = { narrow: '↔ Narrow', wide: '↔ Wide', full: '↔ Full' };
@@ -1552,15 +1591,21 @@ async function loadServedTree({ silent = false } = {}) {
     });
     serverContext = { github: meta.github || null, prReviewComments: meta.prReviewComments || {} };
     fileTree = buildTreeFromPaths(meta.root, meta.files);
-    document.getElementById('root-name').textContent = '🌐 ' + meta.root;
+    const loaded = meta.loaded !== false;
+    document.getElementById('root-name').textContent = (loaded ? '🌐 ' : '✨ ') + meta.root;
     refreshTree();
     syncGithubButton();
     syncToggleButton();
     if (!silent) {
-      document.getElementById('content').innerHTML =
-        `<div class="empty"><div style="font-size:48px;">📂</div><div>${escapeHtml(meta.root)}</div>
-        <div class="hint">Served by the mdbrowse CLI. Click any file to view.<br>
-        Toggle "Markdown only" off to see all files.</div></div>`;
+      if (!loaded) {
+        document.getElementById('content').innerHTML =
+          `<div class="empty"><div style="font-size:48px;">📥</div><div>Nothing loaded yet</div>
+          <div class="hint">Paste a PR URL, <code>owner/repo</code>, <code>owner/repo#N</code>, or a local path into the <strong>Load</strong> input above and hit Enter.</div></div>`;
+      } else {
+        document.getElementById('content').innerHTML =
+          `<div class="empty"><div style="font-size:48px;">📂</div><div>${escapeHtml(meta.root)}</div>
+          <div class="hint">Click any file to view. Toggle "Markdown only" off to see all files.</div></div>`;
+      }
     }
   } catch (err) {
     showError(err);
