@@ -192,6 +192,7 @@
       max-width: 1100px;
       line-height: 1.65;
       font-size: 15px;
+      overflow-wrap: break-word;
     }
     .width-narrow .markdown { max-width: 760px; }
     .width-wide .markdown   { max-width: 1100px; }
@@ -918,7 +919,17 @@ async function renderFile(file, path) {
   }
 
   if (e === 'md' || e === 'markdown' || e === 'mdx') {
-    const html = marked.parse(text, { breaks: false, mangle: false, headerIds: false });
+    // Some "markdown" files in the wild are actually raw YAML / config with
+    // a .md extension. Marked then mashes them into one paragraph. Detect
+    // that case and render as YAML instead.
+    if (looksLikeYaml(text)) {
+      content.innerHTML = `<div class="viewer">${header}<pre><code class="language-yaml">${escapeHtml(text)}</code></pre></div>`;
+      Prism.highlightAllUnder(content);
+      return;
+    }
+    // breaks: true treats single newlines as <br>, the way GitHub renders PR
+    // and comment markdown — keeps multi-line content readable.
+    const html = marked.parse(text, { breaks: true, mangle: false, headerIds: false });
     content.innerHTML = `<div class="viewer">${header}<div class="markdown">${html}</div></div>`;
     decorateMarkdown(content, path, text);
     return;
@@ -954,6 +965,24 @@ async function renderFile(file, path) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// True when a .md file is actually YAML (no markdown headings, mostly key:
+// value lines). These files are common in test-case repos and read terribly
+// when forced through a markdown parser.
+function looksLikeYaml(src) {
+  const lines = src.split('\n')
+    .map(l => l.replace(/^\s+|\s+$/g, ''))
+    .filter(l => l && !l.startsWith('#'));
+  if (lines.length < 4) return false;
+  // Disqualify if there are markdown headings, fenced code, or inline links.
+  for (const l of lines) {
+    if (/^#{1,6} \S/.test(l)) return false;
+    if (l.startsWith('```')) return false;
+    if (/\[[^\]]+\]\([^)]+\)/.test(l)) return false;
+  }
+  const yamlish = lines.filter(l => /^(?:- )?[A-Za-z_][\w-]*\s*:(\s|$)/.test(l)).length;
+  return yamlish / lines.length > 0.5;
 }
 
 // ─── Markdown post-processing ──────────────────────────────────────────────
