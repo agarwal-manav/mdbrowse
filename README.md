@@ -5,8 +5,8 @@ A zero-install, single-page file browser for inspecting any folder or file on yo
 ## Install
 
 ```bash
-git clone <repo-url> ~/Desktop/Meesho-Work/file-browser
-cd ~/Desktop/Meesho-Work/file-browser
+git clone https://github.com/agarwal-manav/mdbrowse.git
+cd mdbrowse
 ./install.sh
 ```
 
