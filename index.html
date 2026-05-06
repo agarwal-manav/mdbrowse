@@ -141,6 +141,12 @@
       line-height: 1.5;
     }
     .viewer code { font-family: 'SF Mono', Monaco, 'Courier New', monospace; font-size: 12px; }
+    /* Prism's default theme adds a white text-shadow that looks like an outline
+       on dark backgrounds. Strip it. */
+    .viewer pre code,
+    .viewer pre[class*="language-"],
+    .viewer code[class*="language-"] { text-shadow: none !important; color: var(--text); }
+    .viewer pre[class*="language-"] { background: var(--panel) !important; }
     .viewer img, .viewer video {
       max-width: 100%; max-height: calc(100vh - 140px);
       display: block; margin: 0 auto;
