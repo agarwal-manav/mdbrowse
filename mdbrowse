@@ -72,6 +72,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("path", nargs="?", help="file, folder, or GitHub spec")
     ap.add_argument("-a", "--all", action="store_true",
                     help="show every file (default: markdown only)")
+    ap.add_argument("--update", action="store_true",
+                    help="git-pull the install directory and re-symlink the CLI")
     return ap.parse_args()
 
 
@@ -82,6 +84,62 @@ def open_chrome(url: str) -> None:
         subprocess.run(["open", "-a", "Google Chrome", url], check=False)
     else:
         subprocess.run(["open", url], check=False)
+
+
+# ─── Self-update helpers ───────────────────────────────────────────────────
+
+def _install_dir_is_git() -> bool:
+    return (SCRIPT_DIR / ".git").exists()
+
+
+def maybe_check_for_updates() -> None:
+    """
+    Background-fetch origin and print a one-line notice if the install dir
+    is behind. No-op if not a git checkout (e.g. user copied the script).
+    """
+    if not _install_dir_is_git():
+        return
+
+    def run() -> None:
+        try:
+            subprocess.run(
+                ["git", "-C", str(SCRIPT_DIR), "fetch", "--quiet", "origin"],
+                timeout=10, capture_output=True, check=False,
+            )
+            out = subprocess.check_output(
+                ["git", "-C", str(SCRIPT_DIR), "rev-list", "--count", "HEAD..@{u}"],
+                text=True, stderr=subprocess.DEVNULL, timeout=5,
+            ).strip()
+            n = int(out or "0")
+            if n > 0:
+                print(f"mdbrowse: update available ({n} commit"
+                      f"{'' if n == 1 else 's'} behind) — run `mdbrowse --update`")
+        except Exception:
+            # Network down, no upstream, detached HEAD — silently ignore.
+            pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def self_update() -> int:
+    """`mdbrowse --update`: pull and re-run install.sh to refresh the symlink."""
+    if not _install_dir_is_git():
+        print(f"mdbrowse: install dir {SCRIPT_DIR} is not a git checkout — "
+              "nothing to update.", file=sys.stderr)
+        return 1
+    print(f"mdbrowse: pulling latest in {SCRIPT_DIR}")
+    pull = subprocess.run(
+        ["git", "-C", str(SCRIPT_DIR), "pull", "--ff-only"],
+    )
+    if pull.returncode != 0:
+        print("mdbrowse: git pull failed — resolve manually and retry",
+              file=sys.stderr)
+        return pull.returncode
+    install_sh = SCRIPT_DIR / "install.sh"
+    if install_sh.exists():
+        subprocess.run(["bash", str(install_sh)])
+    print("mdbrowse: updated.")
+    return 0
 
 
 def free_port(start: int = 8765) -> int:
@@ -797,9 +855,15 @@ def main() -> int:
     args = parse_args()
     md_only = not args.all
 
+    if args.update:
+        return self_update()
+
     if not APP_HTML.exists():
         print(f"mdbrowse: app not found at {APP_HTML}", file=sys.stderr)
         return 2
+
+    # Background notice if the install dir is behind origin.
+    maybe_check_for_updates()
 
     # No-arg: start the server with no target loaded; the user can paste a
     # PR / repo / path in the app's toolbar to load one.
