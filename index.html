@@ -189,7 +189,7 @@
       border: 1px solid var(--border); background: white;
     }
     .viewer .markdown {
-      max-width: 900px;
+      max-width: none;
       line-height: 1.6;
       font-size: 14px;
     }
@@ -301,8 +301,9 @@
     .toc a:hover { color: var(--accent); }
     .toc a.level-3 { padding-left: 12px; color: var(--muted); }
     .toc a.level-4 { padding-left: 24px; color: var(--muted); font-size: 10px; }
-    .has-toc .markdown { max-width: 760px; }
-    @media (max-width: 1100px) { .toc { display: none; } .has-toc .markdown { max-width: 900px; } }
+    /* When the TOC is visible, leave room on the right so content doesn't slide under it */
+    .has-toc { padding-right: 260px; }
+    @media (max-width: 1100px) { .toc { display: none; } .has-toc { padding-right: 32px; } }
 
     /* ── Inline comment buttons on rendered markdown blocks ── */
     .viewer .markdown [data-md-line] { position: relative; }
