@@ -154,10 +154,10 @@ def _ensure_gh() -> None:
         )
 
 
-def fetch_pr(owner: str, repo: str, num: int) -> tuple[Path, list[str]]:
+def fetch_pr(owner: str, repo: str, num: int) -> tuple[Path, list[str], dict, dict[str, list[dict]]]:
     """
     Clone owner/repo, check out PR #num via `gh`, and return:
-        (tmpdir, changed_file_paths)
+        (tmpdir, changed_file_paths, github_context, review_comments_by_path)
     The PR summary is written to `<tmpdir>/_PR.md`. Cleanup is registered with atexit.
     """
     _ensure_gh()
@@ -165,7 +165,7 @@ def fetch_pr(owner: str, repo: str, num: int) -> tuple[Path, list[str]]:
 
     print(f"mdbrowse: fetching metadata for {pr_ref}")
     fields = (
-        "title,body,author,state,url,labels,baseRefName,headRefName,"
+        "title,body,author,state,url,labels,baseRefName,headRefName,headRefOid,"
         "additions,deletions,createdAt,mergedAt,comments,reviews,files"
     )
     try:
@@ -206,7 +206,84 @@ def fetch_pr(owner: str, repo: str, num: int) -> tuple[Path, list[str]]:
     # Synthesised summary at the root of the served tree.
     (tmp / "_PR.md").write_text(render_pr_markdown(meta, owner, repo, num), encoding="utf-8")
 
-    return tmp, changed
+    # Line-level review comments (separate API from gh pr view's "comments").
+    review_comments_by_path = fetch_pr_line_comments(owner, repo, num)
+
+    head_ref = meta.get("headRefOid") or meta.get("headRefName") or "HEAD"
+    github_context = {
+        "owner": owner,
+        "repo": repo,
+        "prUrl": meta.get("url"),
+        "prNumber": num,
+        "headRef": head_ref,
+        # Per-file blob URL: append "/<relpath>" to construct each file link.
+        "baseBlobUrl": f"https://github.com/{owner}/{repo}/blob/{head_ref}",
+    }
+    return tmp, changed, github_context, review_comments_by_path
+
+
+def fetch_pr_line_comments(owner: str, repo: str, num: int) -> dict[str, list[dict]]:
+    """Pull PR review comments (the inline, line-anchored kind) grouped by file path."""
+    out: dict[str, list[dict]] = {}
+    try:
+        raw = subprocess.check_output(
+            ["gh", "api", "--paginate",
+             f"repos/{owner}/{repo}/pulls/{num}/comments",
+             "--jq",
+             ('[.[] | {path, line, original_line, body, '
+              'user: .user.login, created_at, html_url, in_reply_to_id, id}]')],
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return out
+    # `gh api --paginate --jq` emits one JSON array per page; concatenate them.
+    items: list[dict] = []
+    for chunk in raw.strip().splitlines():
+        if not chunk.strip():
+            continue
+        try:
+            items.extend(json.loads(chunk))
+        except json.JSONDecodeError:
+            continue
+    for c in items:
+        path = c.get("path")
+        if not path:
+            continue
+        out.setdefault(path, []).append({
+            "line": c.get("line") or c.get("original_line"),
+            "body": c.get("body") or "",
+            "user": c.get("user") or "?",
+            "createdAt": c.get("created_at") or "",
+            "htmlUrl": c.get("html_url") or "",
+        })
+    for v in out.values():
+        v.sort(key=lambda c: ((c.get("line") or 0), c.get("createdAt") or ""))
+    return out
+
+
+def detect_repo_github_context(repo_dir: Path) -> dict | None:
+    """If `repo_dir` is a git checkout of a github.com repo, return a context dict."""
+    try:
+        url = subprocess.check_output(
+            ["git", "-C", str(repo_dir), "remote", "get-url", "origin"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip() or "HEAD"
+    except subprocess.CalledProcessError:
+        return None
+    m = re.match(r"^(?:https?://github\.com/|git@github\.com:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", url)
+    if not m:
+        return None
+    owner, repo = m.group(1), m.group(2)
+    return {
+        "owner": owner,
+        "repo": repo,
+        "headRef": branch,
+        "baseBlobUrl": f"https://github.com/{owner}/{repo}/blob/{branch}",
+    }
 
 
 def render_pr_markdown(meta: dict, owner: str, repo: str, num: int) -> str:
@@ -354,9 +431,12 @@ def search_index(index: dict[str, str], query: str) -> list[dict]:
 # ─── HTTP server ───────────────────────────────────────────────────────────
 
 def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = None,
-                 root_label: str | None = None) -> None:
+                 root_label: str | None = None,
+                 github_context: dict | None = None,
+                 pr_review_comments: dict[str, list[dict]] | None = None) -> None:
     port = free_port()
     display_root = root_label or target.name
+    pr_review_comments = pr_review_comments or {}
 
     # Tree + md index are recomputed on demand so the Refresh button picks
     # up newly-added files without restarting the server.
@@ -391,7 +471,13 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
             path = split.path
             if path == "/__mdbrowse__/tree.json":
                 fresh = refresh_state()
-                meta = {"root": display_root, "files": fresh["files"], "rootAbs": str(target)}
+                meta = {
+                    "root": display_root,
+                    "files": fresh["files"],
+                    "rootAbs": str(target),
+                    "github": github_context or None,
+                    "prReviewComments": pr_review_comments,
+                }
                 self._send_bytes(json.dumps(meta).encode("utf-8"), "application/json")
                 return
             if path == "/__mdbrowse__/index.html":
@@ -447,18 +533,20 @@ def main() -> int:
     pr = github_pr_spec(args.path)
     if pr is not None:
         owner, repo, num = pr
-        target, changed = fetch_pr(owner, repo, num)
-        # Always include the synthesised summary in the tree.
+        target, changed, gh_ctx, line_comments = fetch_pr(owner, repo, num)
         restrict = set(changed) | {"_PR.md"}
         label = f"{owner}/{repo}#{num}"
-        serve_folder(target, md_only, restrict_to=restrict, root_label=label)
+        serve_folder(target, md_only,
+                     restrict_to=restrict, root_label=label,
+                     github_context=gh_ctx, pr_review_comments=line_comments)
         return 0
 
     # GitHub repo? Clone first, then fall through to folder serving.
     gh_url = github_clone_url(args.path)
     if gh_url is not None:
         target = clone_github(gh_url)
-        serve_folder(target, md_only)
+        serve_folder(target, md_only,
+                     github_context=detect_repo_github_context(target))
         return 0
 
     target = Path(args.path).expanduser()
@@ -475,7 +563,8 @@ def main() -> int:
         open_chrome(f"file://{target}")
         return 0
 
-    serve_folder(target, md_only)
+    serve_folder(target, md_only,
+                 github_context=detect_repo_github_context(target))
     return 0
 
 
