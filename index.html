@@ -993,6 +993,8 @@ function decorateMarkdown(content, path, source) {
 }
 
 function annotateMarkdownLines(md, source) {
+  // Pass 1 — token-based annotation for top-level blocks. Authoritative
+  // line ranges since they come straight from the lexer.
   const tokens = marked.lexer(source);
   const blocks = [];  // {startLine, endLine}
   let pos = 0;        // 0-indexed line cursor through the source
@@ -1007,6 +1009,66 @@ function annotateMarkdownLines(md, source) {
     children[i].dataset.mdLine = blocks[i].startLine;
     children[i].dataset.mdEndLine = blocks[i].endLine;
   }
+
+  // Pass 2 — DOM-based annotation for inner blocks (list items, nested
+  // headings, paragraphs, blockquotes). These don't appear at the top level
+  // when the file is mostly one big nested list, but each one corresponds
+  // to a real source line. Match by leading text.
+  annotateInnerBlocksByText(md, source);
+}
+
+function annotateInnerBlocksByText(md, source) {
+  const lines = source.split('\n').map(l => l.trim());
+  function firstTextSnippet(el) {
+    // First chunk of visible text before any nested block-level element /
+    // <br>. Capped to 100 chars so we don't try to match an entire
+    // wrapped paragraph.
+    const STOP = new Set(['BR','UL','OL','BLOCKQUOTE','TABLE','PRE','P','LI',
+                          'H1','H2','H3','H4','H5','H6','HR']);
+    const parts = [];
+    let stopped = false;
+    function walk(node) {
+      if (stopped) return;
+      if (node.nodeType === 3) { parts.push(node.nodeValue); return; }
+      if (node.nodeType !== 1) return;
+      if (STOP.has(node.tagName)) { stopped = true; return; }
+      for (const child of node.childNodes) walk(child);
+    }
+    for (const child of el.childNodes) {
+      if (stopped) break;
+      walk(child);
+    }
+    return parts.join('').replace(/\s+/g, ' ').trim().slice(0, 100);
+  }
+
+  // Walk in document order, advancing a cursor through source so the same
+  // line isn't claimed twice and we never bind backwards.
+  let cursor = 0;
+  md.querySelectorAll('li, p, h1, h2, h3, h4, h5, h6, blockquote').forEach(el => {
+    if (el.dataset.mdLine) return;  // already annotated by token pass
+    const snippet = firstTextSnippet(el);
+    if (snippet.length < 4) return;
+    for (let i = cursor; i < lines.length; i++) {
+      if (lines[i].length >= 4 && lines[i].includes(snippet)) {
+        el.dataset.mdLine = i + 1;
+        el.dataset.mdEndLine = i + 1;
+        cursor = i + 1;
+        return;
+      }
+    }
+    // Fallback: relax the match — the source line is probably truncated
+    // (tags / formatting eaten); try a startsWith on the first few words.
+    const head = snippet.split(' ').slice(0, 4).join(' ');
+    if (head.length < 8) return;
+    for (let i = cursor; i < lines.length; i++) {
+      if (lines[i].includes(head)) {
+        el.dataset.mdLine = i + 1;
+        el.dataset.mdEndLine = i + 1;
+        cursor = i + 1;
+        return;
+      }
+    }
+  });
 }
 
 function firstCommentableLineInRange(path, start, end) {
@@ -1018,6 +1080,11 @@ function firstCommentableLineInRange(path, start, end) {
 
 function addBlockCommentButtons(md, path) {
   md.querySelectorAll('[data-md-line]').forEach(el => {
+    // Only attach the button to leaf annotated elements — if an element
+    // has annotated descendants (e.g. a top-level <ul> wrapping <li>s
+    // that each carry their own data-md-line), let the descendants own
+    // the buttons. Otherwise we end up stacking 💬 on every layer.
+    if (el.querySelector('[data-md-line]')) return;
     const start = Number(el.dataset.mdLine);
     const end = Number(el.dataset.mdEndLine || start);
     const target = firstCommentableLineInRange(path, start, end);
