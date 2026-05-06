@@ -230,6 +230,29 @@
     .has-toc .markdown { max-width: 760px; }
     @media (max-width: 1100px) { .toc { display: none; } .has-toc .markdown { max-width: 900px; } }
 
+    /* ── Inline comment buttons on rendered markdown blocks ── */
+    .viewer .markdown [data-md-line] { position: relative; }
+    .viewer .markdown .md-add-comment {
+      position: absolute;
+      left: -28px; top: 2px;
+      width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      color: var(--accent);
+      border-radius: 3px;
+      cursor: pointer;
+      padding: 0; font-size: 12px;
+      opacity: 0;
+      transition: opacity 0.1s;
+    }
+    .viewer .markdown [data-md-line]:hover > .md-add-comment,
+    .viewer .markdown .md-add-comment:focus { opacity: 1; }
+    .viewer .markdown .md-add-comment:hover { background: var(--accent); color: #000; }
+    .viewer .markdown .md-block-extras {
+      margin: 8px 0 12px;
+    }
+
     /* ── Source/comment view (line-numbered, commentable gutter) ── */
     .source-view {
       background: var(--panel);
@@ -758,7 +781,7 @@ async function renderFile(file, path) {
   if (e === 'md' || e === 'markdown' || e === 'mdx') {
     const html = marked.parse(text, { breaks: false, mangle: false, headerIds: false });
     content.innerHTML = `<div class="viewer">${header}<div class="markdown">${html}</div></div>`;
-    decorateMarkdown(content, path);
+    decorateMarkdown(content, path, text);
     return;
   }
 
@@ -795,14 +818,112 @@ function escapeHtml(s) {
 }
 
 // ─── Markdown post-processing ──────────────────────────────────────────────
-function decorateMarkdown(content, path) {
+function decorateMarkdown(content, path, source) {
   const viewer = content.querySelector('.viewer');
   const md = content.querySelector('.markdown');
   if (!md) return;
   assignHeadingIds(md);
   jiraAutoLink(md);
-  appendReviewComments(md, path);
+  let inlineMapped = false;
+  if (source && serverContext && serverContext.github && serverContext.github.commentableLines) {
+    annotateMarkdownLines(md, source);
+    inlineMapped = distributeReviewCommentsInline(md, path);
+    addBlockCommentButtons(md, path);
+  }
+  if (!inlineMapped) appendReviewComments(md, path);
   buildToc(md, viewer);
+}
+
+function annotateMarkdownLines(md, source) {
+  const tokens = marked.lexer(source);
+  const blocks = [];  // {startLine, endLine}
+  let pos = 0;        // 0-indexed line cursor through the source
+  for (const t of tokens) {
+    const newlines = (t.raw && (t.raw.match(/\n/g) || []).length) || 0;
+    if (t.type === 'space') { pos += newlines; continue; }
+    blocks.push({ startLine: pos + 1, endLine: pos + Math.max(newlines, 1) });
+    pos += newlines;
+  }
+  const children = md.children;
+  for (let i = 0; i < Math.min(children.length, blocks.length); i++) {
+    children[i].dataset.mdLine = blocks[i].startLine;
+    children[i].dataset.mdEndLine = blocks[i].endLine;
+  }
+}
+
+function firstCommentableLineInRange(path, start, end) {
+  const ctx = serverContext.github || {};
+  const set = new Set((ctx.commentableLines && ctx.commentableLines[path]) || []);
+  for (let l = start; l <= end; l++) if (set.has(l)) return l;
+  return null;
+}
+
+function addBlockCommentButtons(md, path) {
+  md.querySelectorAll('[data-md-line]').forEach(el => {
+    const start = Number(el.dataset.mdLine);
+    const end = Number(el.dataset.mdEndLine || start);
+    const target = firstCommentableLineInRange(path, start, end);
+    if (target === null) return;
+    const btn = document.createElement('button');
+    btn.className = 'md-add-comment';
+    btn.type = 'button';
+    btn.textContent = '💬';
+    btn.title = `Comment on line ${target}`;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      openInlineComposer(el, path, target);
+    });
+    el.appendChild(btn);
+  });
+}
+
+function distributeReviewCommentsInline(md, path) {
+  const comments = (serverContext.prReviewComments || {})[path] || [];
+  if (!comments.length) return false;
+  const blocks = Array.from(md.querySelectorAll('[data-md-line]'));
+  if (!blocks.length) return false;
+  let placed = 0;
+  for (const c of comments) {
+    if (!c.line) continue;
+    // Find the block whose line range contains this comment line.
+    const block = blocks.find(b => {
+      const s = Number(b.dataset.mdLine);
+      const e = Number(b.dataset.mdEndLine || s);
+      return c.line >= s && c.line <= e;
+    }) || blocks[blocks.length - 1];
+    appendInlineComment(block, c);
+    placed++;
+  }
+  return placed > 0;
+}
+
+function appendInlineComment(block, comment) {
+  let extras = block.nextElementSibling;
+  if (!extras || !extras.classList.contains('md-block-extras')) {
+    extras = document.createElement('div');
+    extras.className = 'md-block-extras';
+    block.parentNode.insertBefore(extras, block.nextSibling);
+  }
+  extras.insertAdjacentHTML('beforeend', commentCardHtml(comment));
+}
+
+function openInlineComposer(blockEl, path, lineNum) {
+  let extras = blockEl.nextElementSibling;
+  if (!extras || !extras.classList.contains('md-block-extras')) {
+    extras = document.createElement('div');
+    extras.className = 'md-block-extras';
+    blockEl.parentNode.insertBefore(extras, blockEl.nextSibling);
+  }
+  if (extras.querySelector('.composer')) {
+    extras.querySelector('textarea').focus();
+    return;
+  }
+  const composer = createComposerEl(path, lineNum, (newComment) => {
+    composer.outerHTML = commentCardHtml(newComment);
+  });
+  extras.appendChild(composer);
+  composer.querySelector('textarea').focus();
 }
 
 function slugify(text) {
@@ -966,7 +1087,6 @@ function wireSourceView(content, path) {
 }
 
 function openComposer(lineRow, path, lineNum) {
-  // If a composer already exists below this line, focus it.
   let extras = lineRow.nextElementSibling;
   if (!extras || !extras.classList.contains('src-extras') || extras.dataset.extrasFor !== String(lineNum)) {
     extras = document.createElement('div');
@@ -978,19 +1098,25 @@ function openComposer(lineRow, path, lineNum) {
     extras.querySelector('textarea').focus();
     return;
   }
+  const composer = createComposerEl(path, lineNum, (newComment) => {
+    composer.outerHTML = commentCardHtml(newComment);
+  });
+  extras.appendChild(composer);
+  composer.querySelector('textarea').focus();
+}
+
+function createComposerEl(path, lineNum, onPosted) {
   const composer = document.createElement('div');
   composer.className = 'composer';
   composer.innerHTML =
     `<textarea placeholder="Comment on line ${lineNum}…"></textarea>` +
     `<div class="actions"><span class="err"></span>` +
-      `<button class="cancel">Cancel</button>` +
-      `<button class="primary submit">Comment</button>` +
+      `<button class="cancel" type="button">Cancel</button>` +
+      `<button class="primary submit" type="button">Comment</button>` +
     `</div>`;
-  extras.appendChild(composer);
   const ta = composer.querySelector('textarea');
   const errEl = composer.querySelector('.err');
   const submitBtn = composer.querySelector('.submit');
-  ta.focus();
   composer.querySelector('.cancel').addEventListener('click', () => composer.remove());
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { composer.remove(); }
@@ -1012,15 +1138,15 @@ function openComposer(lineRow, path, lineNum) {
         submitBtn.disabled = false;
         return;
       }
-      // Update local cache and replace composer with the new comment card.
       if (!serverContext.prReviewComments[path]) serverContext.prReviewComments[path] = [];
       serverContext.prReviewComments[path].push(data.comment);
-      composer.outerHTML = commentCardHtml(data.comment);
+      onPosted(data.comment);
     } catch (err) {
       errEl.textContent = err.message || String(err);
       submitBtn.disabled = false;
     }
   });
+  return composer;
 }
 
 // ─── Mode toggle (Rendered ↔ Source) ───────────────────────────────────────
