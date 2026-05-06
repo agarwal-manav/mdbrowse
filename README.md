@@ -4,13 +4,21 @@ A zero-install, single-page file browser for inspecting any folder or file on yo
 
 ## Install
 
+One-liner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/agarwal-manav/mdbrowse/main/remote-install.sh | bash
+```
+
+This clones the repo into `~/.mdbrowse` and symlinks `mdbrowse` into `/opt/homebrew/bin/` (or `~/.local/bin/` as a fallback). Re-run the same command later to update. Pure Python 3 stdlib — no dependencies.
+
+Manual alternative:
+
 ```bash
 git clone https://github.com/agarwal-manav/mdbrowse.git
 cd mdbrowse
 ./install.sh
 ```
-
-`install.sh` symlinks `mdbrowse` into `/opt/homebrew/bin/` (or `~/.local/bin/` as a fallback). Pure Python 3 stdlib — no dependencies. After a `git pull` you don't need to re-run it — the symlink points at the repo, so updates are picked up automatically.
 
 ## How to launch
 
