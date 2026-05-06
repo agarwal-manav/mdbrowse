@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-mdbrowse — open a file, folder, or GitHub repo in the file-browser app.
+mdbrowse — open a file, folder, GitHub repo, or GitHub PR in the file-browser app.
 
 Usage:
   mdbrowse                       open the app, no folder loaded
   mdbrowse PATH                  open file or folder (PATH may be relative)
   mdbrowse owner/repo            shallow-clone a GitHub repo and serve it
   mdbrowse https://github.com/owner/repo
+  mdbrowse owner/repo#123        check out PR #123 and serve only its changed files
+  mdbrowse https://github.com/owner/repo/pull/123
   mdbrowse PATH --all            show every file (default: only .md / .markdown / .mdx)
   mdbrowse PATH -a               shorthand for --all
 
@@ -129,10 +131,164 @@ def clone_github(url: str) -> Path:
     return tmp
 
 
+# ─── GitHub PR support ─────────────────────────────────────────────────────
+
+# owner/repo#123
+_GH_PR_SHORT = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
+# https://github.com/owner/repo/pull/123 (trailing slash or /files etc. ignored)
+_GH_PR_URL = re.compile(r"^https?://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)(?:[/?#].*)?$")
+
+
+def github_pr_spec(spec: str) -> tuple[str, str, int] | None:
+    """Return (owner, repo, number) if `spec` is a GitHub PR reference, else None."""
+    m = _GH_PR_SHORT.match(spec) or _GH_PR_URL.match(spec)
+    if not m:
+        return None
+    return m.group(1), m.group(2), int(m.group(3))
+
+
+def _ensure_gh() -> None:
+    if shutil.which("gh") is None:
+        raise SystemExit(
+            "mdbrowse: PR mode needs the GitHub CLI. Install it: brew install gh"
+        )
+
+
+def fetch_pr(owner: str, repo: str, num: int) -> tuple[Path, list[str]]:
+    """
+    Clone owner/repo, check out PR #num via `gh`, and return:
+        (tmpdir, changed_file_paths)
+    The PR summary is written to `<tmpdir>/_PR.md`. Cleanup is registered with atexit.
+    """
+    _ensure_gh()
+    pr_ref = f"{owner}/{repo}#{num}"
+
+    print(f"mdbrowse: fetching metadata for {pr_ref}")
+    fields = (
+        "title,body,author,state,url,labels,baseRefName,headRefName,"
+        "additions,deletions,createdAt,mergedAt,comments,reviews,files"
+    )
+    try:
+        raw = subprocess.check_output(
+            ["gh", "pr", "view", str(num), "--repo", f"{owner}/{repo}",
+             "--json", fields],
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(f"mdbrowse: gh pr view failed ({e.returncode})")
+    meta = json.loads(raw)
+
+    tmp = Path(tempfile.mkdtemp(prefix="mdbrowse-pr-"))
+    atexit.register(lambda: shutil.rmtree(tmp, ignore_errors=True))
+
+    print(f"mdbrowse: cloning {owner}/{repo}")
+    try:
+        subprocess.run(
+            ["git", "clone", "--quiet", f"https://github.com/{owner}/{repo}.git", str(tmp)],
+            check=True,
+        )
+        print(f"mdbrowse: checking out PR #{num}")
+        subprocess.run(
+            ["gh", "pr", "checkout", str(num)],
+            cwd=str(tmp), check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise SystemExit(f"mdbrowse: clone/checkout failed ({e.returncode})")
+
+    # Files that still exist after checkout (excludes deleted files).
+    changed: list[str] = []
+    for f in meta.get("files", []) or []:
+        path = f.get("path")
+        if path and (tmp / path).exists():
+            changed.append(path)
+
+    # Synthesised summary at the root of the served tree.
+    (tmp / "_PR.md").write_text(render_pr_markdown(meta, owner, repo, num), encoding="utf-8")
+
+    return tmp, changed
+
+
+def render_pr_markdown(meta: dict, owner: str, repo: str, num: int) -> str:
+    """Render PR metadata, description, comments, and reviews as a single markdown doc."""
+    title = meta.get("title") or "(no title)"
+    state = meta.get("state") or "?"
+    author = (meta.get("author") or {}).get("login") or "?"
+    labels = ", ".join(l.get("name", "") for l in (meta.get("labels") or [])) or "—"
+    base = meta.get("baseRefName") or "?"
+    head = meta.get("headRefName") or "?"
+    url = meta.get("url") or f"https://github.com/{owner}/{repo}/pull/{num}"
+    adds = meta.get("additions", 0)
+    dels = meta.get("deletions", 0)
+    created = meta.get("createdAt") or ""
+    merged = meta.get("mergedAt") or ""
+
+    out: list[str] = []
+    out.append(f"# PR #{num}: {title}\n")
+    out.append(f"[{url}]({url})\n")
+    out.append("")
+    out.append("| | |")
+    out.append("|---|---|")
+    out.append(f"| Author | `@{author}` |")
+    out.append(f"| State | **{state}** |")
+    out.append(f"| Branch | `{head}` → `{base}` |")
+    out.append(f"| Diff | +{adds} / −{dels} |")
+    out.append(f"| Labels | {labels} |")
+    if created:
+        out.append(f"| Created | {created} |")
+    if merged:
+        out.append(f"| Merged | {merged} |")
+    out.append("")
+
+    body = (meta.get("body") or "").strip()
+    out.append("## Description\n")
+    out.append(body if body else "_(no description)_")
+    out.append("")
+
+    files = meta.get("files") or []
+    out.append(f"## Changed files ({len(files)})\n")
+    for f in files:
+        path = f.get("path", "")
+        a = f.get("additions", 0)
+        d = f.get("deletions", 0)
+        out.append(f"- `{path}` — +{a}/−{d}")
+    out.append("")
+
+    reviews = [r for r in (meta.get("reviews") or []) if (r.get("body") or "").strip() or r.get("state")]
+    out.append(f"## Reviews ({len(reviews)})\n")
+    if not reviews:
+        out.append("_(none)_\n")
+    for r in reviews:
+        rauthor = (r.get("author") or {}).get("login") or "?"
+        rstate = r.get("state") or ""
+        when = r.get("submittedAt") or ""
+        out.append(f"### `@{rauthor}` — **{rstate}** · {when}\n")
+        rbody = (r.get("body") or "").strip()
+        out.append(rbody if rbody else "_(no body)_")
+        out.append("")
+
+    comments = meta.get("comments") or []
+    out.append(f"## Issue comments ({len(comments)})\n")
+    if not comments:
+        out.append("_(none)_\n")
+    for c in comments:
+        cauthor = (c.get("author") or {}).get("login") or "?"
+        when = c.get("createdAt") or ""
+        out.append(f"### `@{cauthor}` · {when}\n")
+        cbody = (c.get("body") or "").strip()
+        out.append(cbody if cbody else "_(no body)_")
+        out.append("")
+
+    return "\n".join(out) + "\n"
+
+
 # ─── File walking + content index ──────────────────────────────────────────
 
-def list_files(root: Path) -> list[str]:
-    """Recursive file list relative to root; honours SKIP_DIRS."""
+def list_files(root: Path, restrict_to: set[str] | None = None) -> list[str]:
+    """Recursive file list relative to root; honours SKIP_DIRS.
+
+    If `restrict_to` is given, only returns paths in that set.
+    """
     out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -144,7 +300,10 @@ def list_files(root: Path) -> list[str]:
                 rel = full.relative_to(root)
             except ValueError:
                 continue
-            out.append(str(rel))
+            relstr = str(rel)
+            if restrict_to is not None and relstr not in restrict_to:
+                continue
+            out.append(relstr)
     out.sort()
     return out
 
@@ -194,9 +353,11 @@ def search_index(index: dict[str, str], query: str) -> list[dict]:
 
 # ─── HTTP server ───────────────────────────────────────────────────────────
 
-def serve_folder(target: Path, md_only: bool) -> None:
+def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = None,
+                 root_label: str | None = None) -> None:
     port = free_port()
     app_body = APP_HTML.read_bytes()
+    display_root = root_label or target.name
 
     # Tree + md index are recomputed on demand so the Refresh button picks
     # up newly-added files without restarting the server.
@@ -204,7 +365,7 @@ def serve_folder(target: Path, md_only: bool) -> None:
     state: dict = {"files": [], "md_index": {}}
 
     def refresh_state() -> dict:
-        files = list_files(target)
+        files = list_files(target, restrict_to=restrict_to)
         md_index = build_md_index(target, files)
         with state_lock:
             state["files"] = files
@@ -231,7 +392,7 @@ def serve_folder(target: Path, md_only: bool) -> None:
             path = split.path
             if path == "/__mdbrowse__/tree.json":
                 fresh = refresh_state()
-                meta = {"root": target.name, "files": fresh["files"], "rootAbs": str(target)}
+                meta = {"root": display_root, "files": fresh["files"], "rootAbs": str(target)}
                 self._send_bytes(json.dumps(meta).encode("utf-8"), "application/json")
                 return
             if path == "/__mdbrowse__/index.html":
@@ -279,6 +440,18 @@ def main() -> int:
     if args.path is None:
         flag = "0" if not md_only else "1"
         open_chrome(f"file://{APP_HTML}?mdOnly={flag}")
+        return 0
+
+    # GitHub PR? Check first — PR specs (owner/repo#N) would otherwise be
+    # mis-detected as repos by github_clone_url.
+    pr = github_pr_spec(args.path)
+    if pr is not None:
+        owner, repo, num = pr
+        target, changed = fetch_pr(owner, repo, num)
+        # Always include the synthesised summary in the tree.
+        restrict = set(changed) | {"_PR.md"}
+        label = f"{owner}/{repo}#{num}"
+        serve_folder(target, md_only, restrict_to=restrict, root_label=label)
         return 0
 
     # GitHub repo? Clone first, then fall through to folder serving.

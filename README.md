@@ -36,7 +36,12 @@ mdbrowse vTax -a                      # same, but show every file (not just .md)
 mdbrowse vTax/README.md               # render a single file directly in Chrome
 mdbrowse agarwal-manav/mdbrowse       # shallow-clone a GitHub repo and serve it
 mdbrowse https://github.com/owner/repo
+mdbrowse Meesho/containerize-model#30 # check out a PR; tree is restricted to its
+                                      # changed files plus a synthesised _PR.md
+mdbrowse https://github.com/owner/repo/pull/123
 ```
+
+PR mode requires the GitHub CLI (`brew install gh`) — it's used for `gh pr view` (metadata + comments + reviews) and `gh pr checkout` (so fork PRs work). The synthesised `_PR.md` includes title, description, branch, diff stats, labels, file list, reviews, and issue comments.
 
 In served-folder mode the toolbar shows a **"Search docs..."** box that does full-text search across every `.md` file (case-insensitive, with line snippets). Click any result to open the file at that line.
 
