@@ -189,10 +189,13 @@
       border: 1px solid var(--border); background: white;
     }
     .viewer .markdown {
-      max-width: none;
-      line-height: 1.6;
-      font-size: 14px;
+      max-width: 1100px;
+      line-height: 1.65;
+      font-size: 15px;
     }
+    .width-narrow .markdown { max-width: 760px; }
+    .width-wide .markdown   { max-width: 1100px; }
+    .width-full .markdown   { max-width: none; }
     .viewer .markdown > *:first-child { margin-top: 0; }
     .viewer .markdown h1, .viewer .markdown h2 {
       border-bottom: 1px solid var(--border);
@@ -301,9 +304,10 @@
     .toc a:hover { color: var(--accent); }
     .toc a.level-3 { padding-left: 12px; color: var(--muted); }
     .toc a.level-4 { padding-left: 24px; color: var(--muted); font-size: 10px; }
-    /* When the TOC is visible, leave room on the right so content doesn't slide under it */
-    .has-toc { padding-right: 260px; }
-    @media (max-width: 1100px) { .toc { display: none; } .has-toc { padding-right: 32px; } }
+    /* When the TOC is visible, leave room on the right so content doesn't slide under it.
+       Only matters in Full mode — Narrow/Wide already cap content width. */
+    .width-full .viewer.has-toc { padding-right: 260px; }
+    @media (max-width: 1100px) { .toc { display: none; } .width-full .viewer.has-toc { padding-right: 32px; } }
 
     /* ── Inline comment buttons on rendered markdown blocks ── */
     .viewer .markdown [data-md-line] { position: relative; }
@@ -455,6 +459,7 @@
     <button id="refresh" hidden title="Re-scan the served folder for new/changed files">🔄 Refresh</button>
     <button id="open-on-github" hidden title="Open the current file on GitHub at this PR's head">↗ GitHub</button>
     <button id="toggle-mode" hidden title="Switch between rendered view and line-by-line source with inline review comments">💬 Comment mode</button>
+    <button id="toggle-width" title="Cycle reading width (Wide → Full → Narrow)">↔ Wide</button>
     <span class="root-name" id="root-name">No folder open</span>
     <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;">
       <input type="checkbox" id="md-only" checked>
@@ -1228,6 +1233,27 @@ function createComposerEl(path, lineNum, onPosted) {
     }
   });
   return composer;
+}
+
+// ─── Width toggle (Narrow → Wide → Full) ──────────────────────────────────
+const WIDTHS = ['narrow', 'wide', 'full'];
+const WIDTH_LABEL = { narrow: '↔ Narrow', wide: '↔ Wide', full: '↔ Full' };
+let currentWidth = (localStorage.getItem('mdbrowse:width') || 'wide');
+if (!WIDTHS.includes(currentWidth)) currentWidth = 'wide';
+applyWidth();
+
+document.getElementById('toggle-width').addEventListener('click', () => {
+  const i = WIDTHS.indexOf(currentWidth);
+  currentWidth = WIDTHS[(i + 1) % WIDTHS.length];
+  localStorage.setItem('mdbrowse:width', currentWidth);
+  applyWidth();
+});
+
+function applyWidth() {
+  const body = document.body;
+  WIDTHS.forEach(w => body.classList.remove('width-' + w));
+  body.classList.add('width-' + currentWidth);
+  document.getElementById('toggle-width').textContent = WIDTH_LABEL[currentWidth];
 }
 
 // ─── Mode toggle (Rendered ↔ Source) ───────────────────────────────────────
