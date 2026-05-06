@@ -493,12 +493,16 @@ def resolve_spec(spec: str) -> dict:
     gh_url = github_clone_url(spec)
     if gh_url is not None:
         target = clone_github(gh_url)
+        # Extract owner/repo from the clone URL so the tree label looks like
+        # "Meesho/containerize-model" rather than the tempdir's randomised name.
+        m = re.match(r"^(?:https?://github\.com/|git@github\.com:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", gh_url)
+        label = f"{m.group(1)}/{m.group(2)}" if m else target.name
         return {
             "target": target,
             "restrict_to": None,
             "github_context": detect_repo_github_context(target),
             "pr_review_comments": {},
-            "root_label": target.name,
+            "root_label": label,
             "owns_target": True,
         }
     target = Path(spec).expanduser()
@@ -706,6 +710,42 @@ def serve_app(initial: dict | None, md_only: bool) -> None:
                     idx = state["md_index"]
                 body = json.dumps({"query": q, "results": search_index(idx, q)})
                 self._send_bytes(body.encode("utf-8"), "application/json")
+                return
+            # /__mdbrowse__/<spec> — load shortcut. Lets the user paste a
+            # github.com PR URL directly into the address bar by prefixing it
+            # with http://127.0.0.1:<port>/__mdbrowse__/ and the server resolves
+            # + 302s to the viewer.
+            if path.startswith("/__mdbrowse__/"):
+                spec_path = path[len("/__mdbrowse__/"):]
+                if not spec_path:
+                    self.send_response(302)
+                    self.send_header("Location",
+                                     "/__mdbrowse__/index.html?serve=1&mdOnly=1")
+                    self.end_headers()
+                    return
+                spec = spec_path
+                # Browsers collapse "https://" to "https:/" in the path. Restore.
+                if spec.startswith("https:/") and not spec.startswith("https://"):
+                    spec = "https://" + spec[len("https:/"):]
+                elif spec.startswith("http:/") and not spec.startswith("http://"):
+                    spec = "http://" + spec[len("http:/"):]
+                if split.query:
+                    spec += "?" + split.query
+                try:
+                    resolved = resolve_spec(spec)
+                except SystemExit as e:
+                    self._send_bytes(str(e).encode("utf-8"), "text/plain; charset=utf-8", 400)
+                    return
+                except Exception as e:
+                    self._send_bytes(f"load failed: {e}".encode("utf-8"),
+                                     "text/plain; charset=utf-8", 500)
+                    return
+                apply_resolved(resolved)
+                print(f"mdbrowse: switched to  {resolved['root_label']}")
+                self.send_response(302)
+                self.send_header("Location",
+                                 "/__mdbrowse__/index.html?serve=1&mdOnly=1")
+                self.end_headers()
                 return
             # File fetch — translate against the currently-loaded target.
             target = state["target"]
