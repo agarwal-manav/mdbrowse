@@ -413,7 +413,8 @@ function renderNode(node, isRoot = false) {
   row.dataset.lower = node.name.toLowerCase();
 
   if (node.kind === 'directory') {
-    const open = isRoot;
+    // Expand every directory by default — like the GitHub repo view.
+    const open = true;
     const twirl = document.createElement('span');
     twirl.className = 'twirl';
     twirl.textContent = open ? '▾' : '▸';
