@@ -230,6 +230,82 @@
     .has-toc .markdown { max-width: 760px; }
     @media (max-width: 1100px) { .toc { display: none; } .has-toc .markdown { max-width: 900px; } }
 
+    /* ── Source/comment view (line-numbered, commentable gutter) ── */
+    .source-view {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      margin: 0;
+      max-height: calc(100vh - 140px);
+      overflow: auto;
+    }
+    .src-line {
+      display: grid;
+      grid-template-columns: 56px 16px 1fr;
+      gap: 4px; align-items: start;
+      padding: 0 8px 0 0;
+    }
+    .src-line:hover { background: var(--hover); }
+    .src-line .ln {
+      color: var(--muted); text-align: right;
+      user-select: none; padding-right: 6px;
+      border-right: 1px solid var(--border);
+    }
+    .src-line.commentable .ln { color: #6cb6ff; cursor: pointer; }
+    .src-line .add-comment {
+      visibility: hidden;
+      cursor: pointer; color: var(--accent);
+      text-align: center; user-select: none;
+      font-weight: 700;
+    }
+    .src-line.commentable:hover .add-comment { visibility: visible; }
+    .src-line .src-content {
+      white-space: pre-wrap; word-break: break-word;
+      color: var(--text);
+    }
+    .src-extras { grid-column: 1 / -1; margin: 4px 0 8px 60px; }
+    .src-comment-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      padding: 6px 10px;
+      margin: 4px 0; border-radius: 3px;
+      font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      font-size: 12px;
+    }
+    .src-comment-card .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .src-comment-card .meta a { color: var(--accent); text-decoration: none; }
+    .src-comment-card .body { white-space: pre-wrap; line-height: 1.5; }
+    .composer {
+      background: var(--bg);
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      padding: 8px;
+      margin: 4px 0;
+      font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    }
+    .composer textarea {
+      width: 100%; min-height: 60px; box-sizing: border-box;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border);
+      font-family: inherit; font-size: 12px;
+      padding: 6px; border-radius: 3px; resize: vertical;
+    }
+    .composer textarea:focus { outline: none; border-color: var(--accent); }
+    .composer .actions { margin-top: 6px; display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+    .composer .err { color: #f48771; font-size: 11px; flex: 1; }
+    .composer button {
+      background: var(--panel2); color: var(--text);
+      border: 1px solid var(--border);
+      padding: 4px 10px; font: inherit; font-size: 11px;
+      border-radius: 3px; cursor: pointer;
+    }
+    .composer button.primary { background: var(--accent); color: #000; border-color: var(--accent); }
+    .composer button.primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
     /* ── Inline review comments at the bottom of a PR file ── */
     .review-comments {
       margin-top: 32px; padding-top: 16px;
@@ -276,6 +352,7 @@
     <button id="open-file">📄 Open File</button>
     <button id="refresh" hidden title="Re-scan the served folder for new/changed files">🔄 Refresh</button>
     <button id="open-on-github" hidden title="Open the current file on GitHub at this PR's head">↗ GitHub</button>
+    <button id="toggle-mode" hidden title="Switch between rendered view and line-by-line source with inline review comments">💬 Comment mode</button>
     <span class="root-name" id="root-name">No folder open</span>
     <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;">
       <input type="checkbox" id="md-only" checked>
@@ -319,6 +396,8 @@ let currentFilter = '';
 let mdOnly = true;              // mirrors #md-only checkbox; default on
 let serverContext = null;       // { github, prReviewComments } from tree.json
 let currentPath = null;         // path of the file currently in the viewer
+let currentText = null;         // raw text of the current file (for source-mode re-render)
+let viewMode = 'rendered';      // 'rendered' | 'source' — toggled via toolbar in PR mode
 
 // Jira-style ticket pattern for auto-linking inside markdown.
 const JIRA_RE = /\b([A-Z][A-Z0-9]+-\d{1,6})\b/g;
@@ -624,7 +703,9 @@ async function renderFile(file, path) {
   const e = ext(file.name);
   const content = document.getElementById('content');
   currentPath = path;
+  currentText = null;
   syncGithubButton();
+  syncToggleButton();
 
   const header = `<div class="path-bar">📍 <span class="name">${escapeHtml(path)}</span> &nbsp; ${(file.size/1024).toFixed(1)} KB</div>`;
 
@@ -662,6 +743,15 @@ async function renderFile(file, path) {
     text = await file.text();
   } catch (err) {
     showError(err);
+    return;
+  }
+  currentText = text;
+
+  // Source mode: line-numbered view with hover gutter for review comments.
+  // Available whenever we know the GitHub context (PR mode).
+  if (viewMode === 'source' && serverContext && serverContext.github) {
+    content.innerHTML = `<div class="viewer">${header}${renderSourceView(text, path)}</div>`;
+    wireSourceView(content, path);
     return;
   }
 
@@ -806,6 +896,149 @@ function buildToc(md, viewer) {
   });
   viewer.appendChild(toc);
   viewer.classList.add('has-toc');
+}
+
+// ─── Source view + line-anchored review comment posting ───────────────────
+function renderSourceView(text, path) {
+  const ctx = serverContext.github || {};
+  const commentable = new Set((ctx.commentableLines && ctx.commentableLines[path]) || []);
+  const comments = (serverContext.prReviewComments || {})[path] || [];
+  const commentsByLine = new Map();
+  for (const c of comments) {
+    if (!c.line) continue;
+    if (!commentsByLine.has(c.line)) commentsByLine.set(c.line, []);
+    commentsByLine.get(c.line).push(c);
+  }
+  const lines = text.split('\n');
+  const html = ['<pre class="source-view">'];
+  for (let i = 0; i < lines.length; i++) {
+    const lineNum = i + 1;
+    const isCommentable = commentable.has(lineNum);
+    html.push(
+      `<div class="src-line${isCommentable ? ' commentable' : ''}" data-line="${lineNum}">` +
+        `<span class="ln">${lineNum}</span>` +
+        `<span class="add-comment" title="Add review comment on line ${lineNum}">+</span>` +
+        `<span class="src-content">${escapeHtml(lines[i]) || '&nbsp;'}</span>` +
+      `</div>`
+    );
+    const lc = commentsByLine.get(lineNum);
+    if (lc) {
+      html.push('<div class="src-extras" data-extras-for="' + lineNum + '">');
+      for (const c of lc) html.push(commentCardHtml(c));
+      html.push('</div>');
+    }
+  }
+  html.push('</pre>');
+  if (!commentable.size) {
+    html.unshift(
+      `<div class="path-bar" style="border-bottom:none;padding-bottom:0;color:var(--muted);">` +
+      `Note: this file is not part of the PR diff, so review comments cannot be added inline.</div>`
+    );
+  }
+  return html.join('');
+}
+
+function commentCardHtml(c) {
+  const linkOpen = c.htmlUrl ? `<a href="${escapeHtml(c.htmlUrl)}" target="_blank" rel="noopener">` : '';
+  const linkClose = c.htmlUrl ? '</a>' : '';
+  return `<div class="src-comment-card">` +
+    `<div class="meta">${linkOpen}@${escapeHtml(c.user || '?')}${linkClose}` +
+    (c.line ? ` · line ${c.line}` : '') +
+    (c.createdAt ? ` · ${escapeHtml(c.createdAt)}` : '') +
+    `</div>` +
+    `<div class="body">${escapeHtml(c.body || '')}</div>` +
+  `</div>`;
+}
+
+function wireSourceView(content, path) {
+  const ctx = serverContext.github || {};
+  const commentable = new Set((ctx.commentableLines && ctx.commentableLines[path]) || []);
+  content.querySelectorAll('.src-line.commentable').forEach(line => {
+    const lineNum = Number(line.dataset.line);
+    const onClick = (e) => {
+      e.stopPropagation();
+      if (!commentable.has(lineNum)) return;
+      openComposer(line, path, lineNum);
+    };
+    line.querySelector('.add-comment').addEventListener('click', onClick);
+    line.querySelector('.ln').addEventListener('click', onClick);
+  });
+}
+
+function openComposer(lineRow, path, lineNum) {
+  // If a composer already exists below this line, focus it.
+  let extras = lineRow.nextElementSibling;
+  if (!extras || !extras.classList.contains('src-extras') || extras.dataset.extrasFor !== String(lineNum)) {
+    extras = document.createElement('div');
+    extras.className = 'src-extras';
+    extras.dataset.extrasFor = String(lineNum);
+    lineRow.parentNode.insertBefore(extras, lineRow.nextSibling);
+  }
+  if (extras.querySelector('.composer')) {
+    extras.querySelector('textarea').focus();
+    return;
+  }
+  const composer = document.createElement('div');
+  composer.className = 'composer';
+  composer.innerHTML =
+    `<textarea placeholder="Comment on line ${lineNum}…"></textarea>` +
+    `<div class="actions"><span class="err"></span>` +
+      `<button class="cancel">Cancel</button>` +
+      `<button class="primary submit">Comment</button>` +
+    `</div>`;
+  extras.appendChild(composer);
+  const ta = composer.querySelector('textarea');
+  const errEl = composer.querySelector('.err');
+  const submitBtn = composer.querySelector('.submit');
+  ta.focus();
+  composer.querySelector('.cancel').addEventListener('click', () => composer.remove());
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { composer.remove(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { submitBtn.click(); }
+  });
+  submitBtn.addEventListener('click', async () => {
+    const body = ta.value.trim();
+    if (!body) { errEl.textContent = 'comment body required'; return; }
+    submitBtn.disabled = true; errEl.textContent = '';
+    try {
+      const res = await fetch('/__mdbrowse__/post-comment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, line: lineNum, body }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        errEl.textContent = data.error || ('post failed: ' + res.status);
+        submitBtn.disabled = false;
+        return;
+      }
+      // Update local cache and replace composer with the new comment card.
+      if (!serverContext.prReviewComments[path]) serverContext.prReviewComments[path] = [];
+      serverContext.prReviewComments[path].push(data.comment);
+      composer.outerHTML = commentCardHtml(data.comment);
+    } catch (err) {
+      errEl.textContent = err.message || String(err);
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+// ─── Mode toggle (Rendered ↔ Source) ───────────────────────────────────────
+document.getElementById('toggle-mode').addEventListener('click', async () => {
+  viewMode = viewMode === 'source' ? 'rendered' : 'source';
+  syncToggleButton();
+  // Re-render the current file in the new mode if there is one.
+  if (currentPath && selectedRow) selectedRow.click();
+});
+
+function syncToggleButton() {
+  const btn = document.getElementById('toggle-mode');
+  if (!serverContext || !serverContext.github) {
+    btn.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  btn.textContent = viewMode === 'source' ? '📖 Rendered view' : '💬 Comment mode';
 }
 
 // ─── Open-on-GitHub toolbar button ─────────────────────────────────────────
@@ -1057,6 +1290,7 @@ async function loadServedTree({ silent = false } = {}) {
     document.getElementById('root-name').textContent = '🌐 ' + meta.root;
     refreshTree();
     syncGithubButton();
+    syncToggleButton();
     if (!silent) {
       document.getElementById('content').innerHTML =
         `<div class="empty"><div style="font-size:48px;">📂</div><div>${escapeHtml(meta.root)}</div>

@@ -208,6 +208,8 @@ def fetch_pr(owner: str, repo: str, num: int) -> tuple[Path, list[str], dict, di
 
     # Line-level review comments (separate API from gh pr view's "comments").
     review_comments_by_path = fetch_pr_line_comments(owner, repo, num)
+    # Set of lines we're allowed to comment on per file (must be in the diff).
+    commentable_by_path = fetch_pr_diff_lines(owner, repo, num)
 
     head_ref = meta.get("headRefOid") or meta.get("headRefName") or "HEAD"
     github_context = {
@@ -216,10 +218,49 @@ def fetch_pr(owner: str, repo: str, num: int) -> tuple[Path, list[str], dict, di
         "prUrl": meta.get("url"),
         "prNumber": num,
         "headRef": head_ref,
+        "commentableLines": commentable_by_path,
         # Per-file blob URL: append "/<relpath>" to construct each file link.
         "baseBlobUrl": f"https://github.com/{owner}/{repo}/blob/{head_ref}",
     }
     return tmp, changed, github_context, review_comments_by_path
+
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def parse_diff_commentable_lines(diff_text: str) -> dict[str, list[int]]:
+    """
+    For each file in `diff_text`, return the set of RIGHT-side line numbers
+    covered by hunks (i.e. the lines GitHub will accept review comments on).
+    Returned as sorted lists for JSON serialisation.
+    """
+    out: dict[str, set[int]] = {}
+    cur_path: str | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            cur_path = line[6:]
+            out.setdefault(cur_path, set())
+        elif line.startswith("+++ /dev/null"):
+            cur_path = None
+        elif cur_path and line.startswith("@@"):
+            m = _HUNK_RE.match(line)
+            if m:
+                start = int(m.group(1))
+                length = int(m.group(2)) if m.group(2) else 1
+                out[cur_path].update(range(start, start + length))
+    return {p: sorted(s) for p, s in out.items() if s}
+
+
+def fetch_pr_diff_lines(owner: str, repo: str, num: int) -> dict[str, list[int]]:
+    """Fetch the PR's unified diff and parse out commentable RIGHT-side line numbers."""
+    try:
+        diff = subprocess.check_output(
+            ["gh", "pr", "diff", str(num), "--repo", f"{owner}/{repo}"],
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return {}
+    return parse_diff_commentable_lines(diff)
 
 
 def fetch_pr_line_comments(owner: str, repo: str, num: int) -> dict[str, list[dict]]:
@@ -458,13 +499,78 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
         def log_message(self, *args, **kwargs) -> None:
             pass
 
-        def _send_bytes(self, body: bytes, ctype: str) -> None:
-            self.send_response(200)
+        def _send_bytes(self, body: bytes, ctype: str, status: int = 200) -> None:
+            self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_json(self, payload: dict, status: int = 200) -> None:
+            self._send_bytes(json.dumps(payload).encode("utf-8"),
+                             "application/json", status)
+
+        def do_POST(self) -> None:
+            split = urlsplit(self.path)
+            if split.path != "/__mdbrowse__/post-comment":
+                self._send_json({"error": "not found"}, 404)
+                return
+            if not github_context or not github_context.get("prNumber"):
+                self._send_json({"error": "post-comment is only available in PR mode"}, 400)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._send_json({"error": "invalid JSON"}, 400)
+                return
+            file_path = body.get("path")
+            line_num = body.get("line")
+            comment = body.get("body") or ""
+            if not file_path or not isinstance(line_num, int) or not comment.strip():
+                self._send_json({"error": "path, line (int), and body are required"}, 400)
+                return
+            owner = github_context["owner"]
+            repo = github_context["repo"]
+            num = github_context["prNumber"]
+            commit_id = github_context["headRef"]
+            args = [
+                "gh", "api",
+                f"repos/{owner}/{repo}/pulls/{num}/comments",
+                "-X", "POST",
+                "-f", f"body={comment}",
+                "-f", f"commit_id={commit_id}",
+                "-f", f"path={file_path}",
+                "-F", f"line={line_num}",
+                "-f", "side=RIGHT",
+            ]
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            except subprocess.SubprocessError as e:
+                self._send_json({"error": f"gh api failed: {e}"}, 500)
+                return
+            if result.returncode != 0:
+                self._send_json({"error": (result.stderr or "gh api failed").strip()}, 502)
+                return
+            try:
+                payload = json.loads(result.stdout or "{}")
+            except json.JSONDecodeError:
+                self._send_json({"error": "could not parse gh api response"}, 502)
+                return
+            # Update in-memory cache so future tree.json includes the new comment.
+            new_entry = {
+                "line": payload.get("line") or payload.get("original_line") or line_num,
+                "body": payload.get("body") or comment,
+                "user": (payload.get("user") or {}).get("login") or "?",
+                "createdAt": payload.get("created_at") or "",
+                "htmlUrl": payload.get("html_url") or "",
+            }
+            pr_review_comments.setdefault(file_path, []).append(new_entry)
+            pr_review_comments[file_path].sort(
+                key=lambda c: ((c.get("line") or 0), c.get("createdAt") or "")
+            )
+            self._send_json({"ok": True, "comment": new_entry})
 
         def do_GET(self) -> None:
             split = urlsplit(self.path)
