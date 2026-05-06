@@ -30,24 +30,35 @@
 
   <style>
     :root {
-      --bg: #1e1e1e;
-      --panel: #252526;
-      --panel2: #2d2d30;
-      --border: #3e3e42;
-      --text: #d4d4d4;
-      --muted: #858585;
-      --accent: #4ec9b0;
-      --hover: #2a2d2e;
-      --selected: #094771;
+      /* GitHub Dark palette */
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel2: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #1f6feb;
+      --hover: rgba(177,186,196,0.12);
+      --selected: rgba(56,139,253,0.15);
+      --selected-border: rgba(56,139,253,0.4);
+      --danger: #f85149;
+      --success: #3fb950;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+                   Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                   "Liberation Mono", monospace;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', Monaco, monospace;
+      font-family: var(--font-sans);
       background: var(--bg);
       color: var(--text);
-      font-size: 13px;
+      font-size: 14px;
+      line-height: 1.5;
       overflow: hidden;
+      -webkit-font-smoothing: antialiased;
     }
 
     .app { display: flex; flex-direction: column; height: 100vh; }
@@ -55,7 +66,7 @@
     /* ── Top toolbar ── */
     .toolbar {
       display: flex; align-items: center; gap: 8px;
-      padding: 8px 12px;
+      padding: 10px 16px;
       background: var(--panel);
       border-bottom: 1px solid var(--border);
       flex: 0 0 auto;
@@ -64,31 +75,37 @@
       background: var(--panel2);
       color: var(--text);
       border: 1px solid var(--border);
-      padding: 6px 12px;
-      font: inherit;
-      font-size: 12px;
-      border-radius: 3px;
+      padding: 5px 12px;
+      font: inherit; font-size: 13px; font-weight: 500;
+      border-radius: 6px;
       cursor: pointer;
+      transition: background 0.1s, border-color 0.1s;
     }
-    .toolbar button:hover { background: var(--hover); border-color: var(--accent); }
+    .toolbar button:hover { background: #30363d; border-color: var(--muted); }
+    .toolbar button:active { background: var(--panel); }
     .toolbar .root-name {
       font-weight: 600; color: var(--accent);
       margin-left: 8px; flex: 1; min-width: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 13px;
     }
     .toolbar input[type="search"] {
       background: var(--bg); color: var(--text);
       border: 1px solid var(--border);
-      padding: 6px 8px; border-radius: 3px; font: inherit; font-size: 12px;
+      padding: 5px 10px; border-radius: 6px; font: inherit; font-size: 13px;
       width: 220px;
     }
-    .toolbar input[type="search"]:focus { outline: none; border-color: var(--accent); }
-    .stat { color: var(--muted); font-size: 11px; }
+    .toolbar input[type="search"]:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(88,166,255,0.25);
+    }
+    .toolbar label { font-size: 12px; }
+    .stat { color: var(--muted); font-size: 12px; }
 
     /* ── Main split ── */
     .main { flex: 1 1 auto; display: flex; min-height: 0; }
     .sidebar {
-      width: 320px;
+      width: 340px;
       background: var(--panel);
       border-right: 1px solid var(--border);
       overflow: auto;
@@ -98,34 +115,47 @@
     .content { flex: 1 1 auto; overflow: auto; padding: 0; min-width: 0; background: var(--bg); }
 
     /* ── Tree ── */
-    .tree { padding: 4px 0; }
-    .tree ul { list-style: none; margin: 0; padding-left: 14px; }
-    .tree > ul { padding-left: 4px; }
+    .tree { padding: 8px 0; }
+    .tree ul { list-style: none; margin: 0; padding-left: 16px; }
+    .tree > ul { padding-left: 8px; }
     .row {
-      display: flex; align-items: center; gap: 4px;
-      padding: 2px 6px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 8px;
       cursor: pointer;
       user-select: none;
       white-space: nowrap;
-      border-radius: 2px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-right: 8px;
     }
     .row:hover { background: var(--hover); }
-    .row.selected { background: var(--selected); }
+    .row.selected {
+      background: var(--selected);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
     .row.hidden { display: none; }
     .row .twirl {
-      width: 10px; display: inline-block; text-align: center;
+      width: 12px; display: inline-block; text-align: center;
       color: var(--muted); font-size: 10px;
     }
-    .row .icon { width: 14px; display: inline-block; text-align: center; }
+    .row .icon { width: 16px; display: inline-block; text-align: center; font-size: 13px; }
     .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
     .row.dir > .icon { color: #dcb67a; }
     .row.file > .icon { color: var(--muted); }
+    .row .badge {
+      background: var(--panel2); color: var(--muted);
+      font-size: 11px; padding: 0 7px; border-radius: 12px;
+      margin-left: 6px;
+    }
 
     /* ── Content viewer ── */
-    .viewer { padding: 16px 20px; }
+    .viewer { padding: 24px 32px; }
     .viewer .path-bar {
-      font-size: 11px; color: var(--muted);
-      padding-bottom: 12px; border-bottom: 1px solid var(--border);
+      font-size: 12px; color: var(--muted);
+      padding: 8px 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
       margin-bottom: 16px;
       word-break: break-all;
     }
@@ -134,13 +164,13 @@
       margin: 0;
       background: var(--panel) !important;
       border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 12px !important;
+      border-radius: 6px;
+      padding: 16px !important;
       overflow: auto;
-      max-height: calc(100vh - 140px);
-      line-height: 1.5;
+      max-height: calc(100vh - 160px);
+      line-height: 1.45;
     }
-    .viewer code { font-family: 'SF Mono', Monaco, 'Courier New', monospace; font-size: 12px; }
+    .viewer code { font-family: var(--font-mono); font-size: 85%; }
     /* Prism's default theme adds a white text-shadow that looks like an outline
        on dark backgrounds. Strip it across every Prism-styled element + tokens. */
     .viewer pre,
@@ -161,36 +191,80 @@
     .viewer .markdown {
       max-width: 900px;
       line-height: 1.6;
+      font-size: 14px;
     }
-    .viewer .markdown h1, .viewer .markdown h2 { border-bottom: 1px solid var(--border); padding-bottom: 4px; }
-    .viewer .markdown h1 { font-size: 1.5em; margin: 18px 0 10px; }
-    .viewer .markdown h2 { font-size: 1.25em; margin: 16px 0 8px; }
-    .viewer .markdown h3 { font-size: 1.1em; margin: 14px 0 6px; }
-    .viewer .markdown h4 { font-size: 1em; margin: 12px 0 4px; }
-    .viewer .markdown h5 { font-size: 0.95em; margin: 10px 0 4px; color: var(--muted); }
-    .viewer .markdown h6 { font-size: 0.9em; margin: 10px 0 4px; color: var(--muted); }
-    .viewer .markdown a { color: var(--accent); }
-    .viewer .markdown table { border-collapse: collapse; margin: 12px 0; }
-    .viewer .markdown th, .viewer .markdown td { border: 1px solid var(--border); padding: 6px 10px; }
-    .viewer .markdown th { background: var(--panel); }
-    .viewer .markdown code { background: var(--panel); padding: 1px 5px; border-radius: 3px; }
-    .viewer .markdown pre code { background: transparent; padding: 0; }
-    .viewer .markdown blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--muted); }
+    .viewer .markdown > *:first-child { margin-top: 0; }
+    .viewer .markdown h1, .viewer .markdown h2 {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+      font-weight: 600;
+    }
+    .viewer .markdown h1 { font-size: 1.6em; margin: 24px 0 12px; }
+    .viewer .markdown h2 { font-size: 1.3em; margin: 22px 0 10px; }
+    .viewer .markdown h3 { font-size: 1.1em; margin: 18px 0 8px; font-weight: 600; }
+    .viewer .markdown h4 { font-size: 1em; margin: 16px 0 6px; font-weight: 600; }
+    .viewer .markdown h5 { font-size: 0.95em; margin: 14px 0 6px; font-weight: 600; color: var(--muted); }
+    .viewer .markdown h6 { font-size: 0.9em; margin: 14px 0 6px; font-weight: 600; color: var(--muted); }
+    .viewer .markdown p { margin: 0 0 14px; }
+    .viewer .markdown ul, .viewer .markdown ol { margin: 0 0 14px; padding-left: 28px; }
+    .viewer .markdown li { margin: 2px 0; }
+    .viewer .markdown li > p { margin: 4px 0; }
+    .viewer .markdown a { color: var(--accent); text-decoration: none; }
+    .viewer .markdown a:hover { text-decoration: underline; }
+    .viewer .markdown table {
+      border-collapse: collapse; margin: 12px 0;
+      display: block; overflow: auto; max-width: 100%;
+    }
+    .viewer .markdown th, .viewer .markdown td {
+      border: 1px solid var(--border); padding: 6px 14px;
+    }
+    .viewer .markdown th { background: var(--panel); font-weight: 600; }
+    .viewer .markdown tr:nth-child(2n) td { background: rgba(110,118,129,0.08); }
+    .viewer .markdown code {
+      background: rgba(110,118,129,0.16);
+      padding: 0.2em 0.4em;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 85%;
+    }
+    .viewer .markdown pre {
+      background: var(--panel) !important;
+      border-radius: 6px;
+      padding: 16px !important;
+      margin: 0 0 16px;
+      line-height: 1.45;
+    }
+    .viewer .markdown pre code {
+      background: transparent; padding: 0;
+      font-size: 85%;
+    }
+    .viewer .markdown blockquote {
+      border-left: 4px solid var(--border);
+      padding: 0 16px;
+      color: var(--muted);
+      margin: 0 0 16px;
+    }
+    .viewer .markdown hr {
+      border: 0; border-top: 1px solid var(--border);
+      margin: 24px 0; height: 0;
+    }
+    .viewer .markdown img { max-width: 100%; border-radius: 6px; }
 
     .empty {
       display: flex; align-items: center; justify-content: center;
       height: 100%; color: var(--muted);
-      flex-direction: column; gap: 8px;
+      flex-direction: column; gap: 12px;
+      font-size: 14px;
     }
-    .empty .hint { font-size: 11px; max-width: 360px; text-align: center; line-height: 1.6; }
+    .empty .hint { font-size: 13px; max-width: 420px; text-align: center; line-height: 1.6; }
 
     .badge {
       display: inline-block;
-      background: var(--panel);
+      background: var(--panel2);
       color: var(--muted);
-      font-size: 10px;
-      padding: 1px 6px;
-      border-radius: 8px;
+      font-size: 11px;
+      padding: 0 7px;
+      border-radius: 12px;
       margin-left: 6px;
     }
 
@@ -334,38 +408,42 @@
       margin-top: 32px; padding-top: 16px;
       border-top: 1px solid var(--border);
     }
-    .review-comments h3 { font-size: 1em; color: var(--accent); margin: 0 0 12px; }
+    .review-comments h3 { font-size: 1em; color: var(--text); margin: 0 0 12px; font-weight: 600; }
     .review-comments .rc {
       background: var(--panel); border: 1px solid var(--border);
-      border-radius: 4px; padding: 8px 12px; margin-bottom: 8px;
+      border-radius: 6px; padding: 10px 14px; margin-bottom: 10px;
     }
-    .review-comments .rc-meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .review-comments .rc-meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
     .review-comments .rc-meta a { color: var(--accent); text-decoration: none; }
-    .review-comments .rc-body { font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+    .review-comments .rc-meta a:hover { text-decoration: underline; }
+    .review-comments .rc-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
 
     /* ── Content-search results ── */
-    .results { padding: 6px 0; }
+    .results { padding: 8px 0; }
     .results .result {
-      padding: 6px 10px;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--border);
       cursor: pointer;
+      font-size: 13px;
     }
     .results .result:hover { background: var(--hover); }
     .results .result .path {
       color: var(--accent); font-weight: 600;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .results .result .total { color: var(--muted); font-size: 10px; margin-left: 6px; }
+    .results .result .total { color: var(--muted); font-size: 11px; margin-left: 8px; font-weight: 400; }
     .results .result .snip {
-      color: var(--muted); font-size: 11px;
-      padding-left: 6px; margin-top: 2px;
+      color: var(--muted); font-size: 12px;
+      padding-left: 8px; margin-top: 4px;
+      font-family: var(--font-mono);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .results .result .snip .ln { color: #888; margin-right: 6px; }
+    .results .result .snip .ln { color: var(--muted); margin-right: 8px; }
     .results .result .snip mark {
-      background: #5c4a00; color: #fff8c5; padding: 0 1px; border-radius: 2px;
+      background: rgba(187,128,9,0.4); color: #f0883e;
+      padding: 0 2px; border-radius: 3px;
     }
-    .results .empty-msg { padding: 12px; color: var(--muted); font-size: 11px; text-align: center; }
+    .results .empty-msg { padding: 16px; color: var(--muted); font-size: 12px; text-align: center; }
   </style>
 </head>
 <body>
