@@ -356,7 +356,6 @@ def search_index(index: dict[str, str], query: str) -> list[dict]:
 def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = None,
                  root_label: str | None = None) -> None:
     port = free_port()
-    app_body = APP_HTML.read_bytes()
     display_root = root_label or target.name
 
     # Tree + md index are recomputed on demand so the Refresh button picks
@@ -396,7 +395,8 @@ def serve_folder(target: Path, md_only: bool, restrict_to: set[str] | None = Non
                 self._send_bytes(json.dumps(meta).encode("utf-8"), "application/json")
                 return
             if path == "/__mdbrowse__/index.html":
-                self._send_bytes(app_body, "text/html; charset=utf-8")
+                # Re-read on every request so HTML edits land without a restart.
+                self._send_bytes(APP_HTML.read_bytes(), "text/html; charset=utf-8")
                 return
             if path == "/__mdbrowse__/search":
                 qs = parse_qs(split.query)

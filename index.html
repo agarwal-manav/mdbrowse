@@ -142,11 +142,13 @@
     }
     .viewer code { font-family: 'SF Mono', Monaco, 'Courier New', monospace; font-size: 12px; }
     /* Prism's default theme adds a white text-shadow that looks like an outline
-       on dark backgrounds. Strip it. */
-    .viewer pre code,
-    .viewer pre[class*="language-"],
-    .viewer code[class*="language-"] { text-shadow: none !important; color: var(--text); }
-    .viewer pre[class*="language-"] { background: var(--panel) !important; }
+       on dark backgrounds. Strip it across every Prism-styled element + tokens. */
+    .viewer pre,
+    .viewer pre *,
+    .viewer code,
+    .viewer code * { text-shadow: none !important; }
+    .viewer pre[class*="language-"] { background: var(--panel) !important; color: var(--text); }
+    .viewer code[class*="language-"] { color: var(--text); }
     .viewer img, .viewer video {
       max-width: 100%; max-height: calc(100vh - 140px);
       display: block; margin: 0 auto;
