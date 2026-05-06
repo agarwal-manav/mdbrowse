@@ -1290,15 +1290,35 @@ function syncToggleButton() {
 function syncGithubButton() {
   const btn = document.getElementById('open-on-github');
   const ctx = serverContext && serverContext.github;
-  if (!ctx || !ctx.baseBlobUrl || !currentPath || currentPath === '_PR.md') {
-    btn.hidden = true;
-    return;
-  }
+  if (!ctx || !currentPath) { btn.hidden = true; return; }
+
   btn.hidden = false;
-  btn.onclick = () => {
-    const url = `${ctx.baseBlobUrl}/${currentPath}`;
+  btn.onclick = async () => {
+    let url;
+    if (ctx.prUrl) {
+      // PR mode: jump to the PR's "Files changed" tab anchored at this file's
+      // diff. The synthesised _PR.md is virtual, so just open the PR overview.
+      if (currentPath === '_PR.md') {
+        url = ctx.prUrl;
+      } else {
+        const hash = await sha256Hex(currentPath);
+        url = `${ctx.prUrl}/files#diff-${hash}`;
+      }
+    } else if (ctx.baseBlobUrl) {
+      // Plain repo / folder mode: file at the current branch.
+      url = `${ctx.baseBlobUrl}/${currentPath}`;
+    } else {
+      return;
+    }
     window.open(url, '_blank', 'noopener');
   };
+}
+
+async function sha256Hex(text) {
+  const buf = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ─── Keyboard nav ──────────────────────────────────────────────────────────
