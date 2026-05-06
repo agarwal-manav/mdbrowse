@@ -824,6 +824,9 @@ function decorateMarkdown(content, path, source) {
   if (!md) return;
   assignHeadingIds(md);
   jiraAutoLink(md);
+  // Build the TOC before injecting comment buttons — otherwise h.textContent
+  // would slurp in the button's 💬 glyph and the TOC entries would all carry it.
+  buildToc(md, viewer);
   let inlineMapped = false;
   if (source && serverContext && serverContext.github && serverContext.github.commentableLines) {
     annotateMarkdownLines(md, source);
@@ -831,7 +834,6 @@ function decorateMarkdown(content, path, source) {
     addBlockCommentButtons(md, path);
   }
   if (!inlineMapped) appendReviewComments(md, path);
-  buildToc(md, viewer);
 }
 
 function annotateMarkdownLines(md, source) {
