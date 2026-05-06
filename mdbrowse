@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""
+mdbrowse — open a file or folder in the Meesho-Work file-browser app.
+
+Usage:
+  mdbrowse                  open the app, no folder loaded
+  mdbrowse PATH             open file or folder (PATH may be relative)
+  mdbrowse PATH --all       show every file (default: only .md / .markdown / .mdx)
+  mdbrowse PATH -a          shorthand for --all
+
+Behaviour:
+  * No PATH      — opens the app idle. The "Markdown only" toggle reflects the
+                   --all flag (on by default).
+  * PATH is file — opens the file directly in Chrome (Chrome handles HTML /
+                   PDF / images natively; everything else is shown raw).
+  * PATH is dir  — spins up a localhost HTTP server rooted at PATH, opens the
+                   app pointed at it, and the app fetches files over HTTP.
+                   Ctrl+C to stop the server.
+
+Skip list (folders never indexed):
+  .git  node_modules  __pycache__  .DS_Store  .next  dist  build  .venv  venv
+"""
+from __future__ import annotations
+import argparse
+import functools
+import http.server
+import json
+import os
+import socket
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+APP_DIR = Path("~/Desktop/Meesho-Work/file-browser").expanduser()
+APP_HTML = APP_DIR / "index.html"
+
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".DS_Store",
+             ".next", "dist", "build", ".venv", "venv"}
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="mdbrowse",
+        description="Open a file or folder in the Meesho-Work file-browser app.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  mdbrowse                      # idle app, md-only on\n"
+            "  mdbrowse vTax/containerize-executor\n"
+            "  mdbrowse vTax -a              # show all files, not just .md\n"
+            "  mdbrowse vTax/README.md       # render a single file in Chrome\n"
+        ),
+    )
+    ap.add_argument("path", nargs="?", help="file or folder (relative ok)")
+    ap.add_argument("-a", "--all", action="store_true",
+                    help="show every file (default: markdown only)")
+    return ap.parse_args()
+
+
+def open_chrome(url: str) -> None:
+    """Open a URL in Chrome; fall back to default browser if Chrome is absent."""
+    chrome = "/Applications/Google Chrome.app"
+    if Path(chrome).exists():
+        subprocess.run(["open", "-a", "Google Chrome", url], check=False)
+    else:
+        subprocess.run(["open", url], check=False)
+
+
+def free_port(start: int = 8765) -> int:
+    """Find an unused port starting from `start`."""
+    for p in range(start, start + 200):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    raise RuntimeError("could not find a free port in 200 attempts")
+
+
+def list_files(root: Path) -> list[str]:
+    """Recursive file list relative to root; honours SKIP_DIRS."""
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for f in filenames:
+            if f == ".DS_Store":
+                continue
+            full = Path(dirpath) / f
+            try:
+                rel = full.relative_to(root)
+            except ValueError:
+                continue
+            out.append(str(rel))
+    out.sort()
+    return out
+
+
+def serve_folder(target: Path, md_only: bool) -> None:
+    files = list_files(target)
+    port = free_port()
+    tree_meta = {"root": target.name, "files": files, "rootAbs": str(target)}
+    tree_body = json.dumps(tree_meta).encode("utf-8")
+    app_body = APP_HTML.read_bytes()
+
+    class MdbrowseHandler(http.server.SimpleHTTPRequestHandler):
+        # Quiet the per-request stderr spam.
+        def log_message(self, *args, **kwargs) -> None:
+            pass
+
+        def _send_bytes(self, body: bytes, ctype: str) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            # Strip query string for routing.
+            path = self.path.split("?", 1)[0]
+            if path == "/__mdbrowse__/tree.json":
+                self._send_bytes(tree_body, "application/json")
+                return
+            if path == "/__mdbrowse__/index.html":
+                self._send_bytes(app_body, "text/html; charset=utf-8")
+                return
+            return super().do_GET()
+
+    handler = functools.partial(MdbrowseHandler, directory=str(target))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+
+    flag = "0" if not md_only else "1"
+    url = f"http://127.0.0.1:{port}/__mdbrowse__/index.html?serve=1&mdOnly={flag}"
+
+    print(f"mdbrowse: serving  {target}")
+    print(f"mdbrowse: app at   {url}")
+    print(f"mdbrowse: Ctrl+C to stop")
+
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    open_chrome(url)
+    try:
+        t.join()
+    except KeyboardInterrupt:
+        print("\nmdbrowse: shutting down")
+        server.shutdown()
+
+
+def main() -> int:
+    args = parse_args()
+    md_only = not args.all
+
+    if not APP_HTML.exists():
+        print(f"mdbrowse: app not found at {APP_HTML}", file=sys.stderr)
+        return 2
+
+    if args.path is None:
+        flag = "0" if not md_only else "1"
+        open_chrome(f"file://{APP_HTML}?mdOnly={flag}")
+        return 0
+
+    target = Path(args.path).expanduser()
+    if not target.is_absolute():
+        target = (Path.cwd() / target).resolve()
+    if not target.exists():
+        print(f"mdbrowse: not found: {target}", file=sys.stderr)
+        return 1
+
+    if target.is_file():
+        # Single file — Chrome handles HTML/PDF/images natively. For .md, .py,
+        # etc. Chrome shows raw text; the app's renderers don't apply. Routing
+        # a single file through the served-folder mode would be over-kill.
+        open_chrome(f"file://{target}")
+        return 0
+
+    serve_folder(target, md_only)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

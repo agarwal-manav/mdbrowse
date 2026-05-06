@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File Browser</title>
+
+  <!-- Markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <!-- Syntax highlighting -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-javascript.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-typescript.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-json.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-go.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-java.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-kotlin.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-rust.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-jsx.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-tsx.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-css.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-sql.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-docker.min.js"></script>
+  <!-- Mermaid for flow diagrams -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --panel: #252526;
+      --panel2: #2d2d30;
+      --border: #3e3e42;
+      --text: #d4d4d4;
+      --muted: #858585;
+      --accent: #4ec9b0;
+      --hover: #2a2d2e;
+      --selected: #094771;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', Monaco, monospace;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      overflow: hidden;
+    }
+
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── Top toolbar ── */
+    .toolbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+    }
+    .toolbar button {
+      background: var(--panel2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      font: inherit;
+      font-size: 12px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .toolbar button:hover { background: var(--hover); border-color: var(--accent); }
+    .toolbar .root-name {
+      font-weight: 600; color: var(--accent);
+      margin-left: 8px; flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .toolbar input[type="search"] {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 8px; border-radius: 3px; font: inherit; font-size: 12px;
+      width: 220px;
+    }
+    .toolbar input[type="search"]:focus { outline: none; border-color: var(--accent); }
+    .stat { color: var(--muted); font-size: 11px; }
+
+    /* ── Main split ── */
+    .main { flex: 1 1 auto; display: flex; min-height: 0; }
+    .sidebar {
+      width: 320px;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      overflow: auto;
+      flex: 0 0 auto;
+      resize: horizontal;
+    }
+    .content { flex: 1 1 auto; overflow: auto; padding: 0; min-width: 0; background: var(--bg); }
+
+    /* ── Tree ── */
+    .tree { padding: 4px 0; }
+    .tree ul { list-style: none; margin: 0; padding-left: 14px; }
+    .tree > ul { padding-left: 4px; }
+    .row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 2px 6px;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      border-radius: 2px;
+    }
+    .row:hover { background: var(--hover); }
+    .row.selected { background: var(--selected); }
+    .row.hidden { display: none; }
+    .row .twirl {
+      width: 10px; display: inline-block; text-align: center;
+      color: var(--muted); font-size: 10px;
+    }
+    .row .icon { width: 14px; display: inline-block; text-align: center; }
+    .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+    .row.dir > .icon { color: #dcb67a; }
+    .row.file > .icon { color: var(--muted); }
+
+    /* ── Content viewer ── */
+    .viewer { padding: 16px 20px; }
+    .viewer .path-bar {
+      font-size: 11px; color: var(--muted);
+      padding-bottom: 12px; border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+      word-break: break-all;
+    }
+    .viewer .path-bar .name { color: var(--text); font-weight: 600; }
+    .viewer pre {
+      margin: 0;
+      background: var(--panel) !important;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 12px !important;
+      overflow: auto;
+      max-height: calc(100vh - 140px);
+      line-height: 1.5;
+    }
+    .viewer code { font-family: 'SF Mono', Monaco, 'Courier New', monospace; font-size: 12px; }
+    .viewer img, .viewer video {
+      max-width: 100%; max-height: calc(100vh - 140px);
+      display: block; margin: 0 auto;
+      background: #000; border: 1px solid var(--border);
+    }
+    .viewer iframe {
+      width: 100%; height: calc(100vh - 140px);
+      border: 1px solid var(--border); background: white;
+    }
+    .viewer .markdown {
+      max-width: 900px;
+      line-height: 1.6;
+    }
+    .viewer .markdown h1, .viewer .markdown h2 { border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+    .viewer .markdown a { color: var(--accent); }
+    .viewer .markdown table { border-collapse: collapse; margin: 12px 0; }
+    .viewer .markdown th, .viewer .markdown td { border: 1px solid var(--border); padding: 6px 10px; }
+    .viewer .markdown th { background: var(--panel); }
+    .viewer .markdown code { background: var(--panel); padding: 1px 5px; border-radius: 3px; }
+    .viewer .markdown pre code { background: transparent; padding: 0; }
+    .viewer .markdown blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--muted); }
+
+    .empty {
+      display: flex; align-items: center; justify-content: center;
+      height: 100%; color: var(--muted);
+      flex-direction: column; gap: 8px;
+    }
+    .empty .hint { font-size: 11px; max-width: 360px; text-align: center; line-height: 1.6; }
+
+    .badge {
+      display: inline-block;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-left: 6px;
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="toolbar">
+    <button id="open-folder">📁 Open Folder</button>
+    <button id="open-file">📄 Open File</button>
+    <span class="root-name" id="root-name">No folder open</span>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;">
+      <input type="checkbox" id="md-only" checked>
+      Markdown only
+    </label>
+    <input type="search" id="filter" placeholder="Filter files...">
+    <span class="stat" id="stats"></span>
+  </div>
+  <div class="main">
+    <aside class="sidebar"><div class="tree" id="tree"></div></aside>
+    <main class="content" id="content">
+      <div class="empty">
+        <div style="font-size:48px;">📂</div>
+        <div>No file selected</div>
+        <div class="hint">
+          Click <strong>Open Folder</strong> to recursively browse a directory,
+          or <strong>Open File</strong> for a single file.<br><br>
+          <em>Tip:</em> open this app in Chrome / Edge for full folder support
+          (uses the File System Access API).
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<input type="file" id="hidden-file" hidden>
+
+<script>
+'use strict';
+
+// ─── State ─────────────────────────────────────────────────────────────────
+let rootHandle = null;          // FileSystemDirectoryHandle (folder mode)
+let fileTree = null;            // full tree from buildTree()
+let displayTree = null;         // tree currently rendered (may be md-pruned)
+let selectedRow = null;         // currently-selected DOM row
+let currentFilter = '';
+let mdOnly = true;              // mirrors #md-only checkbox; default on
+
+// ─── Extension → renderer + Prism language ─────────────────────────────────
+const LANG_BY_EXT = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  ts: 'typescript', tsx: 'tsx', jsx: 'jsx',
+  py: 'python', go: 'go', java: 'java', kt: 'kotlin',
+  rs: 'rust', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
+  sh: 'bash', bash: 'bash', zsh: 'bash',
+  yml: 'yaml', yaml: 'yaml', json: 'json',
+  css: 'css', scss: 'css', sass: 'css',
+  sql: 'sql', dockerfile: 'docker',
+  toml: 'ini', ini: 'ini', cfg: 'ini', env: 'bash', conf: 'ini',
+  xml: 'markup', svg: 'markup',
+};
+
+const TEXT_EXTS = new Set([
+  ...Object.keys(LANG_BY_EXT),
+  'md', 'mdx', 'markdown', 'txt', 'log', 'gitignore', 'gitkeep', 'editorconfig',
+  'lock', 'mod', 'sum', 'pem', 'crt', 'key', 'cql', 'jsonl', 'csv', 'tsv',
+  'rst', 'adoc', 'org', 'tex', 'rb', 'php', 'pl', 'lua', 'r', 'jl',
+  'service', 'ts', 'd.ts',
+]);
+const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','avif','bmp','ico']);
+const VIDEO_EXTS = new Set(['mp4','webm','mov','m4v']);
+const AUDIO_EXTS = new Set(['mp3','wav','ogg','m4a','flac']);
+const PDF_EXTS = new Set(['pdf']);
+
+// Files >5MB are not rendered as text
+const TEXT_SIZE_LIMIT = 5 * 1024 * 1024;
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+function ext(name) {
+  // Special case: files like 'Dockerfile', 'Makefile', '.gitignore'
+  const base = name.toLowerCase();
+  if (base === 'dockerfile' || base.endsWith('.dockerfile')) return 'dockerfile';
+  if (base === 'makefile') return 'makefile';
+  const dot = name.lastIndexOf('.');
+  if (dot < 0) return '';
+  return name.slice(dot + 1).toLowerCase();
+}
+
+function fileIcon(name) {
+  const e = ext(name);
+  if (IMAGE_EXTS.has(e)) return '🖼';
+  if (VIDEO_EXTS.has(e)) return '🎞';
+  if (AUDIO_EXTS.has(e)) return '🎵';
+  if (PDF_EXTS.has(e)) return '📕';
+  if (e === 'md' || e === 'markdown') return '📝';
+  if (e === 'json') return '🟨';
+  if (e === 'yml' || e === 'yaml') return '📋';
+  if (e === 'html' || e === 'htm') return '🌐';
+  if (name.toLowerCase() === 'dockerfile') return '🐳';
+  return '📄';
+}
+
+function shouldSkip(name) {
+  // Hide noise — but still allow them via filter override later.
+  return name === '.DS_Store' || name === '__pycache__' || name === '.git'
+      || name === 'node_modules' || name === '.next' || name === 'dist'
+      || name === 'build' || name === '.venv' || name === 'venv';
+}
+
+// ─── Tree build ────────────────────────────────────────────────────────────
+async function buildTree(handle, depth = 0) {
+  const node = { name: handle.name, kind: 'directory', children: [], handle };
+  try {
+    for await (const [name, child] of handle.entries()) {
+      if (shouldSkip(name)) continue;
+      if (child.kind === 'directory') {
+        node.children.push(await buildTree(child, depth + 1));
+      } else {
+        node.children.push({ name, kind: 'file', handle: child });
+      }
+    }
+  } catch (e) {
+    console.warn('Skipping (permission?):', handle.name, e);
+  }
+  // Sort: folders first, then alphabetical
+  node.children.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return node;
+}
+
+function countLeaves(node) {
+  if (node.kind === 'file') return 1;
+  return node.children.reduce((s, c) => s + countLeaves(c), 0);
+}
+
+function isMarkdown(name) {
+  const e = ext(name);
+  return e === 'md' || e === 'markdown' || e === 'mdx';
+}
+
+// Return a *copy* of node with:
+//   - file children kept only if they are .md
+//   - directory children kept only if they (transitively) contain at least one .md
+//   - returns null if node is a directory whose subtree has no .md at all
+//   - returns the node itself if node is an .md file
+//   - returns null if node is a non-md file
+function pruneToMarkdown(node) {
+  if (node.kind === 'file') {
+    return isMarkdown(node.name) ? node : null;
+  }
+  const kept = [];
+  for (const child of node.children) {
+    const pruned = pruneToMarkdown(child);
+    if (pruned) kept.push(pruned);
+  }
+  if (kept.length === 0) return null;
+  return { ...node, children: kept };
+}
+
+// ─── Tree render ───────────────────────────────────────────────────────────
+function renderTree(root) {
+  const treeEl = document.getElementById('tree');
+  treeEl.innerHTML = '';
+  treeEl.appendChild(renderNode(root, true));
+}
+
+// Re-derive displayTree from fileTree based on the md-only toggle, then
+// re-render. Updates the file-count stat to match what's actually shown.
+function refreshTree() {
+  if (!fileTree) return;
+  if (mdOnly) {
+    const pruned = pruneToMarkdown(fileTree);
+    if (!pruned) {
+      // Folder has no .md anywhere — show empty tree + a stat note.
+      document.getElementById('tree').innerHTML = '';
+      document.getElementById('stats').textContent =
+        `0 .md files (full tree has ${countLeaves(fileTree)})`;
+      return;
+    }
+    displayTree = pruned;
+    document.getElementById('stats').textContent =
+      `${countLeaves(pruned)} .md files (of ${countLeaves(fileTree)})`;
+  } else {
+    displayTree = fileTree;
+    document.getElementById('stats').textContent = `${countLeaves(fileTree)} files`;
+  }
+  renderTree(displayTree);
+  applyFilter();
+}
+
+function renderNode(node, isRoot = false) {
+  const li = document.createElement('li');
+  const row = document.createElement('div');
+  row.className = `row ${node.kind === 'directory' ? 'dir' : 'file'}`;
+  row.dataset.path = node.name;
+  row.dataset.lower = node.name.toLowerCase();
+
+  if (node.kind === 'directory') {
+    const open = isRoot;
+    const twirl = document.createElement('span');
+    twirl.className = 'twirl';
+    twirl.textContent = open ? '▾' : '▸';
+    row.appendChild(twirl);
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.textContent = open ? '📂' : '📁';
+    row.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = node.name;
+    row.appendChild(name);
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = countLeaves(node);
+    row.appendChild(badge);
+    li.appendChild(row);
+
+    const ul = document.createElement('ul');
+    if (!open) ul.style.display = 'none';
+    for (const child of node.children) {
+      ul.appendChild(renderNode(child, false));
+    }
+    li.appendChild(ul);
+
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = ul.style.display !== 'none';
+      ul.style.display = isOpen ? 'none' : '';
+      twirl.textContent = isOpen ? '▸' : '▾';
+      icon.textContent = isOpen ? '📁' : '📂';
+    });
+  } else {
+    const twirl = document.createElement('span'); twirl.className = 'twirl';
+    row.appendChild(twirl);
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.textContent = fileIcon(node.name);
+    row.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = node.name;
+    row.appendChild(name);
+    li.appendChild(row);
+
+    row.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (selectedRow) selectedRow.classList.remove('selected');
+      row.classList.add('selected');
+      selectedRow = row;
+      try {
+        let file, displayPath;
+        if (node.servedPath !== undefined) {
+          // Served via HTTP by the mdbrowse CLI — fetch the bytes.
+          const resp = await fetch('/' + node.servedPath);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${node.servedPath}`);
+          const blob = await resp.blob();
+          file = new File([blob], node.name, { type: blob.type });
+          displayPath = node.servedPath;
+        } else {
+          file = await node.handle.getFile();
+          displayPath = buildPath(node);
+        }
+        await renderFile(file, displayPath);
+      } catch (err) {
+        showError(err);
+      }
+    });
+  }
+
+  // Build a parent chain for path display
+  if (isRoot) li._node = node;
+  return wrapRoot(li, isRoot);
+}
+
+function wrapRoot(li, isRoot) {
+  if (!isRoot) return li;
+  const ul = document.createElement('ul');
+  ul.appendChild(li);
+  return ul;
+}
+
+function buildPath(node) {
+  // Walk up the DOM to reconstruct the path
+  let row = document.querySelector(`.row.selected`) || null;
+  if (!row) return node.name;
+  const parts = [];
+  let el = row;
+  while (el && el.tagName !== 'DIV') el = el.parentElement;
+  while (el) {
+    const li = el.closest('li');
+    if (!li) break;
+    const rowEl = li.querySelector(':scope > .row');
+    if (rowEl) parts.unshift(rowEl.querySelector('.name').textContent);
+    const parentUl = li.parentElement;
+    if (!parentUl) break;
+    el = parentUl.parentElement && parentUl.parentElement.tagName === 'LI'
+       ? parentUl.parentElement
+       : null;
+  }
+  return parts.join('/') || node.name;
+}
+
+// ─── Filter ────────────────────────────────────────────────────────────────
+document.getElementById('filter').addEventListener('input', (e) => {
+  currentFilter = e.target.value.toLowerCase();
+  applyFilter();
+});
+
+function applyFilter() {
+  const rows = document.querySelectorAll('#tree .row');
+  if (!currentFilter) {
+    rows.forEach(r => r.classList.remove('hidden'));
+    return;
+  }
+  rows.forEach(r => {
+    const isFile = r.classList.contains('file');
+    const matches = r.dataset.lower.includes(currentFilter);
+    if (isFile) {
+      r.classList.toggle('hidden', !matches);
+    } else {
+      // Dir visible if any descendant file matches
+      const li = r.closest('li');
+      const childMatch = li.querySelector('.row.file:not(.hidden)');
+      // We need to evaluate after files are toggled — second pass
+      r._dir = li;
+    }
+  });
+  // second pass for dirs
+  document.querySelectorAll('#tree .row.dir').forEach(r => {
+    const li = r._dir;
+    if (!li) return;
+    const visibleFiles = Array.from(li.querySelectorAll('.row.file')).filter(f => !f.classList.contains('hidden'));
+    const selfMatch = r.dataset.lower.includes(currentFilter);
+    r.classList.toggle('hidden', visibleFiles.length === 0 && !selfMatch);
+    // auto-expand
+    const ul = li.querySelector(':scope > ul');
+    if (ul && visibleFiles.length > 0) ul.style.display = '';
+  });
+}
+
+// ─── File rendering ────────────────────────────────────────────────────────
+async function renderFile(file, path) {
+  const e = ext(file.name);
+  const content = document.getElementById('content');
+
+  const header = `<div class="path-bar">📍 <span class="name">${escapeHtml(path)}</span> &nbsp; ${(file.size/1024).toFixed(1)} KB</div>`;
+
+  if (IMAGE_EXTS.has(e)) {
+    const url = URL.createObjectURL(file);
+    content.innerHTML = `<div class="viewer">${header}<img src="${url}" alt="${escapeHtml(file.name)}"></div>`;
+    return;
+  }
+  if (VIDEO_EXTS.has(e)) {
+    const url = URL.createObjectURL(file);
+    content.innerHTML = `<div class="viewer">${header}<video controls src="${url}"></video></div>`;
+    return;
+  }
+  if (AUDIO_EXTS.has(e)) {
+    const url = URL.createObjectURL(file);
+    content.innerHTML = `<div class="viewer">${header}<audio controls src="${url}" style="width:100%"></audio></div>`;
+    return;
+  }
+  if (PDF_EXTS.has(e)) {
+    const url = URL.createObjectURL(file);
+    content.innerHTML = `<div class="viewer">${header}<iframe src="${url}"></iframe></div>`;
+    return;
+  }
+
+  // Text-like
+  if (file.size > TEXT_SIZE_LIMIT) {
+    content.innerHTML = `<div class="viewer">${header}
+      <div class="empty"><div>File too large to render (${(file.size/1024/1024).toFixed(1)} MB)</div>
+      <div class="hint">Limit: ${TEXT_SIZE_LIMIT/1024/1024} MB</div></div></div>`;
+    return;
+  }
+
+  let text;
+  try {
+    text = await file.text();
+  } catch (err) {
+    showError(err);
+    return;
+  }
+
+  if (e === 'md' || e === 'markdown' || e === 'mdx') {
+    const html = marked.parse(text, { breaks: false, mangle: false, headerIds: false });
+    content.innerHTML = `<div class="viewer">${header}<div class="markdown">${html}</div></div>`;
+    return;
+  }
+
+  if (e === 'html' || e === 'htm') {
+    // Render in sandboxed iframe so JS doesn't escape; offer raw view too.
+    const blob = new Blob([text], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    content.innerHTML = `<div class="viewer">${header}
+      <iframe sandbox="allow-scripts allow-same-origin" src="${url}"></iframe>
+      <details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--muted);">View raw HTML source</summary>
+      <pre><code class="language-markup">${escapeHtml(text)}</code></pre></details></div>`;
+    Prism.highlightAllUnder(content);
+    return;
+  }
+
+  // Default: highlighted code block
+  const lang = LANG_BY_EXT[e] || (TEXT_EXTS.has(e) || !e ? 'none' : null);
+  if (lang === null) {
+    // unknown binary — offer download
+    const url = URL.createObjectURL(file);
+    content.innerHTML = `<div class="viewer">${header}
+      <div class="empty"><div>Binary file (${e || 'no extension'})</div>
+      <div class="hint">Cannot render. <a href="${url}" download="${file.name}" style="color:var(--accent);">Download</a> instead.</div></div></div>`;
+    return;
+  }
+
+  const langClass = lang === 'none' ? '' : `language-${lang}`;
+  content.innerHTML = `<div class="viewer">${header}<pre><code class="${langClass}">${escapeHtml(text)}</code></pre></div>`;
+  if (lang !== 'none') Prism.highlightAllUnder(content);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function showError(err) {
+  document.getElementById('content').innerHTML =
+    `<div class="viewer"><div class="empty"><div>Error</div><div class="hint">${escapeHtml(err.message || String(err))}</div></div></div>`;
+}
+
+// ─── Open folder ───────────────────────────────────────────────────────────
+document.getElementById('open-folder').addEventListener('click', async () => {
+  if (!window.showDirectoryPicker) {
+    alert('Folder open requires Chrome or Edge (File System Access API). For other browsers use "Open File" for individual files.');
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'read' });
+    rootHandle = handle;
+    document.getElementById('root-name').textContent = '📂 ' + handle.name;
+    document.getElementById('content').innerHTML =
+      `<div class="empty"><div style="font-size:48px;">⏳</div><div>Indexing folder…</div></div>`;
+    fileTree = await buildTree(handle);
+    refreshTree();
+    document.getElementById('content').innerHTML =
+      `<div class="empty"><div style="font-size:48px;">📂</div><div>${escapeHtml(handle.name)}</div>
+      <div class="hint">Click any file in the tree to view it. Toggle "Markdown only" off to see all files.</div></div>`;
+  } catch (err) {
+    if (err.name !== 'AbortError') showError(err);
+  }
+});
+
+// ─── Open single file ──────────────────────────────────────────────────────
+document.getElementById('open-file').addEventListener('click', () => {
+  document.getElementById('hidden-file').click();
+});
+document.getElementById('hidden-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('root-name').textContent = '📄 ' + file.name;
+  document.getElementById('tree').innerHTML = '';
+  document.getElementById('stats').textContent = '';
+  await renderFile(file, file.name);
+});
+
+// ─── Markdown-only toggle ──────────────────────────────────────────────────
+document.getElementById('md-only').addEventListener('change', (e) => {
+  mdOnly = e.target.checked;
+  refreshTree();
+});
+
+// ─── Mermaid: re-init when markdown contains code blocks ──────────────────
+mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+
+// ─── URL query-param init ──────────────────────────────────────────────────
+// Honour ?mdOnly=0/1 and ?serve=1 (the latter is set by the mdbrowse CLI when
+// the app is opened against a Python-served target folder; the script sends
+// the file tree via /__mdbrowse__/tree.json so we skip the folder picker).
+(function initFromQuery() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('mdOnly') === '0') {
+    mdOnly = false;
+    document.getElementById('md-only').checked = false;
+  } else if (params.get('mdOnly') === '1') {
+    mdOnly = true;
+    document.getElementById('md-only').checked = true;
+  }
+  if (params.get('serve') === '1') {
+    loadServedTree();
+  }
+})();
+
+async function loadServedTree() {
+  try {
+    document.getElementById('content').innerHTML =
+      `<div class="empty"><div style="font-size:48px;">⏳</div><div>Loading served folder…</div></div>`;
+    const meta = await fetch('/__mdbrowse__/tree.json').then(r => {
+      if (!r.ok) throw new Error('tree.json fetch failed: ' + r.status);
+      return r.json();
+    });
+    fileTree = buildTreeFromPaths(meta.root, meta.files);
+    document.getElementById('root-name').textContent = '🌐 ' + meta.root;
+    refreshTree();
+    document.getElementById('content').innerHTML =
+      `<div class="empty"><div style="font-size:48px;">📂</div><div>${escapeHtml(meta.root)}</div>
+      <div class="hint">Served by the mdbrowse CLI. Click any file to view.<br>
+      Toggle "Markdown only" off to see all files.</div></div>`;
+  } catch (err) {
+    showError(err);
+  }
+}
+
+// Build a tree node graph from a flat list of relative file paths.
+// Each leaf carries `servedPath` so click handlers know to fetch via HTTP.
+function buildTreeFromPaths(rootName, paths) {
+  const root = { name: rootName, kind: 'directory', children: [] };
+  for (const p of paths) {
+    const parts = p.split('/');
+    let cur = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isFile = i === parts.length - 1;
+      if (isFile) {
+        cur.children.push({ name: part, kind: 'file', servedPath: p });
+      } else {
+        let dir = cur.children.find(c => c.kind === 'directory' && c.name === part);
+        if (!dir) {
+          dir = { name: part, kind: 'directory', children: [] };
+          cur.children.push(dir);
+        }
+        cur = dir;
+      }
+    }
+  }
+  function sortRec(node) {
+    node.children.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const c of node.children) if (c.kind === 'directory') sortRec(c);
+  }
+  sortRec(root);
+  return root;
+}
+
+</script>
+</body>
+</html>
