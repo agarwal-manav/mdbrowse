@@ -921,8 +921,17 @@ async function renderFile(file, path) {
   if (e === 'md' || e === 'markdown' || e === 'mdx') {
     // Some "markdown" files in the wild are actually raw YAML / config with
     // a .md extension. Marked then mashes them into one paragraph. Detect
-    // that case and render as YAML instead.
+    // that case and render differently:
+    //   - In PR mode: route to the line-numbered source view so users can
+    //     still comment on lines (the inline 💬 button on rendered markdown
+    //     blocks doesn't apply when there are no blocks).
+    //   - Otherwise: render as syntax-highlighted YAML.
     if (looksLikeYaml(text)) {
+      if (serverContext && serverContext.github) {
+        content.innerHTML = `<div class="viewer">${header}${renderSourceView(text, path)}</div>`;
+        wireSourceView(content, path);
+        return;
+      }
       content.innerHTML = `<div class="viewer">${header}<pre><code class="language-yaml">${escapeHtml(text)}</code></pre></div>`;
       Prism.highlightAllUnder(content);
       return;
