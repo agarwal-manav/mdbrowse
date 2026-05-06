@@ -179,6 +179,30 @@
       border-radius: 8px;
       margin-left: 6px;
     }
+
+    /* ── Content-search results ── */
+    .results { padding: 6px 0; }
+    .results .result {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .results .result:hover { background: var(--hover); }
+    .results .result .path {
+      color: var(--accent); font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .results .result .total { color: var(--muted); font-size: 10px; margin-left: 6px; }
+    .results .result .snip {
+      color: var(--muted); font-size: 11px;
+      padding-left: 6px; margin-top: 2px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .results .result .snip .ln { color: #888; margin-right: 6px; }
+    .results .result .snip mark {
+      background: #5c4a00; color: #fff8c5; padding: 0 1px; border-radius: 2px;
+    }
+    .results .empty-msg { padding: 12px; color: var(--muted); font-size: 11px; text-align: center; }
   </style>
 </head>
 <body>
@@ -192,10 +216,14 @@
       Markdown only
     </label>
     <input type="search" id="filter" placeholder="Filter files...">
+    <input type="search" id="content-search" placeholder="Search docs..." title="Full-text search across markdown files (served-folder mode only)">
     <span class="stat" id="stats"></span>
   </div>
   <div class="main">
-    <aside class="sidebar"><div class="tree" id="tree"></div></aside>
+    <aside class="sidebar">
+      <div class="tree" id="tree"></div>
+      <div class="results" id="results" hidden></div>
+    </aside>
     <main class="content" id="content">
       <div class="empty">
         <div style="font-size:48px;">📂</div>
@@ -627,6 +655,95 @@ document.getElementById('open-folder').addEventListener('click', async () => {
   }
 });
 
+// ─── Content search (served-folder mode only) ─────────────────────────────
+let isServed = false;
+let lastSearchSeq = 0;
+let searchDebounce = null;
+
+document.getElementById('content-search').addEventListener('input', (e) => {
+  const q = e.target.value.trim();
+  clearTimeout(searchDebounce);
+  if (!q) {
+    showTree();
+    return;
+  }
+  if (!isServed) {
+    showResultsMessage('Content search is only available in served-folder mode (mdbrowse PATH).');
+    return;
+  }
+  searchDebounce = setTimeout(() => runSearch(q), 150);
+});
+
+async function runSearch(q) {
+  const seq = ++lastSearchSeq;
+  showResultsMessage('Searching…');
+  try {
+    const url = '/__mdbrowse__/search?q=' + encodeURIComponent(q);
+    const data = await fetch(url).then(r => r.json());
+    if (seq !== lastSearchSeq) return;  // a newer search has started
+    renderResults(data.query, data.results);
+  } catch (err) {
+    if (seq === lastSearchSeq) showResultsMessage('Search failed: ' + err.message);
+  }
+}
+
+function renderResults(query, results) {
+  const tree = document.getElementById('tree');
+  const panel = document.getElementById('results');
+  tree.hidden = true;
+  panel.hidden = false;
+  panel.innerHTML = '';
+
+  if (!results.length) {
+    panel.innerHTML = `<div class="empty-msg">No matches for <strong>${escapeHtml(query)}</strong></div>`;
+    return;
+  }
+
+  const re = new RegExp(escapeRegex(query), 'gi');
+  for (const r of results) {
+    const item = document.createElement('div');
+    item.className = 'result';
+    item.innerHTML =
+      `<div><span class="path">${escapeHtml(r.path)}</span><span class="total">${r.total} hit${r.total === 1 ? '' : 's'}</span></div>` +
+      r.snippets.map(s =>
+        `<div class="snip"><span class="ln">${s.line}:</span>${highlight(s.text, re)}</div>`
+      ).join('');
+    item.addEventListener('click', () => openServedPath(r.path));
+    panel.appendChild(item);
+  }
+}
+
+function highlight(text, re) {
+  return escapeHtml(text).replace(re, m => '<mark>' + m + '</mark>');
+}
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function showResultsMessage(msg) {
+  const tree = document.getElementById('tree');
+  const panel = document.getElementById('results');
+  tree.hidden = true;
+  panel.hidden = false;
+  panel.innerHTML = `<div class="empty-msg">${escapeHtml(msg)}</div>`;
+}
+
+function showTree() {
+  document.getElementById('tree').hidden = false;
+  document.getElementById('results').hidden = true;
+}
+
+async function openServedPath(servedPath) {
+  try {
+    const resp = await fetch('/' + servedPath);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${servedPath}`);
+    const blob = await resp.blob();
+    const name = servedPath.split('/').pop();
+    const file = new File([blob], name, { type: blob.type });
+    await renderFile(file, servedPath);
+  } catch (err) {
+    showError(err);
+  }
+}
+
 // ─── Open single file ──────────────────────────────────────────────────────
 document.getElementById('open-file').addEventListener('click', () => {
   document.getElementById('hidden-file').click();
@@ -669,6 +786,7 @@ mermaid.initialize({ startOnLoad: false, theme: 'dark' });
 
 async function loadServedTree() {
   try {
+    isServed = true;
     document.getElementById('content').innerHTML =
       `<div class="empty"><div style="font-size:48px;">⏳</div><div>Loading served folder…</div></div>`;
     const meta = await fetch('/__mdbrowse__/tree.json').then(r => {

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-mdbrowse — open a file or folder in the Meesho-Work file-browser app.
+mdbrowse — open a file, folder, or GitHub repo in the file-browser app.
 
 Usage:
-  mdbrowse                  open the app, no folder loaded
-  mdbrowse PATH             open file or folder (PATH may be relative)
-  mdbrowse PATH --all       show every file (default: only .md / .markdown / .mdx)
-  mdbrowse PATH -a          shorthand for --all
+  mdbrowse                       open the app, no folder loaded
+  mdbrowse PATH                  open file or folder (PATH may be relative)
+  mdbrowse owner/repo            shallow-clone a GitHub repo and serve it
+  mdbrowse https://github.com/owner/repo
+  mdbrowse PATH --all            show every file (default: only .md / .markdown / .mdx)
+  mdbrowse PATH -a               shorthand for --all
 
 Behaviour:
   * No PATH      — opens the app idle. The "Markdown only" toggle reflects the
@@ -16,43 +18,56 @@ Behaviour:
   * PATH is dir  — spins up a localhost HTTP server rooted at PATH, opens the
                    app pointed at it, and the app fetches files over HTTP.
                    Ctrl+C to stop the server.
+  * GitHub spec  — `git clone --depth 1` into a temp dir, then serve as above.
+                   Temp dir is removed on Ctrl+C.
 
 Skip list (folders never indexed):
   .git  node_modules  __pycache__  .DS_Store  .next  dist  build  .venv  venv
 """
 from __future__ import annotations
 import argparse
+import atexit
 import functools
 import http.server
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
-APP_DIR = Path("~/Desktop/Meesho-Work/file-browser").expanduser()
-APP_HTML = APP_DIR / "index.html"
+SCRIPT_DIR = Path(__file__).resolve().parent
+APP_HTML = SCRIPT_DIR / "index.html"
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".DS_Store",
              ".next", "dist", "build", ".venv", "venv"}
+
+MD_EXTS = (".md", ".markdown", ".mdx")
+SEARCH_INDEX_SIZE_LIMIT = 1 * 1024 * 1024  # 1 MB per file
+SEARCH_MAX_RESULTS = 50
+SEARCH_SNIPPETS_PER_FILE = 3
 
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         prog="mdbrowse",
-        description="Open a file or folder in the Meesho-Work file-browser app.",
+        description="Open a file, folder, or GitHub repo in the file-browser app.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  mdbrowse                      # idle app, md-only on\n"
+            "  mdbrowse                          # idle app, md-only on\n"
             "  mdbrowse vTax/containerize-executor\n"
-            "  mdbrowse vTax -a              # show all files, not just .md\n"
-            "  mdbrowse vTax/README.md       # render a single file in Chrome\n"
+            "  mdbrowse vTax -a                  # show all files, not just .md\n"
+            "  mdbrowse vTax/README.md           # render a single file in Chrome\n"
+            "  mdbrowse agarwal-manav/mdbrowse   # clone + serve a GitHub repo\n"
         ),
     )
-    ap.add_argument("path", nargs="?", help="file or folder (relative ok)")
+    ap.add_argument("path", nargs="?", help="file, folder, or GitHub spec")
     ap.add_argument("-a", "--all", action="store_true",
                     help="show every file (default: markdown only)")
     return ap.parse_args()
@@ -79,6 +94,43 @@ def free_port(start: int = 8765) -> int:
     raise RuntimeError("could not find a free port in 200 attempts")
 
 
+# ─── GitHub repo support ───────────────────────────────────────────────────
+
+# owner/repo — letters, digits, dots, dashes, underscores.
+_GH_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+
+def github_clone_url(spec: str) -> str | None:
+    """Return a clonable URL if `spec` looks like a GitHub repo, else None."""
+    if _GH_SHORT.match(spec):
+        return f"https://github.com/{spec}.git"
+    if spec.startswith("git@github.com:"):
+        return spec
+    if spec.startswith(("http://", "https://")):
+        host = urlsplit(spec).netloc.lower()
+        if host in ("github.com", "www.github.com"):
+            return spec if spec.endswith(".git") else spec.rstrip("/") + ".git"
+    return None
+
+
+def clone_github(url: str) -> Path:
+    """Shallow-clone `url` into a temp dir and register cleanup. Returns the dir."""
+    tmp = Path(tempfile.mkdtemp(prefix="mdbrowse-"))
+    atexit.register(lambda: shutil.rmtree(tmp, ignore_errors=True))
+    print(f"mdbrowse: cloning {url}")
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", url, str(tmp)],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise SystemExit(f"mdbrowse: git clone failed ({e.returncode})")
+    return tmp
+
+
+# ─── File walking + content index ──────────────────────────────────────────
+
 def list_files(root: Path) -> list[str]:
     """Recursive file list relative to root; honours SKIP_DIRS."""
     out: list[str] = []
@@ -97,8 +149,54 @@ def list_files(root: Path) -> list[str]:
     return out
 
 
+def build_md_index(root: Path, files: list[str]) -> dict[str, str]:
+    """Read every .md file under root into memory for content search."""
+    idx: dict[str, str] = {}
+    for rel in files:
+        if not rel.lower().endswith(MD_EXTS):
+            continue
+        full = root / rel
+        try:
+            if full.stat().st_size > SEARCH_INDEX_SIZE_LIMIT:
+                continue
+            idx[rel] = full.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return idx
+
+
+def search_index(index: dict[str, str], query: str) -> list[dict]:
+    """Return ranked matches: [{path, snippets:[{line, text}], total}]. Case-insensitive."""
+    q = query.strip().lower()
+    if not q:
+        return []
+    results: list[dict] = []
+    for path, content in index.items():
+        lower = content.lower()
+        if q not in lower:
+            continue
+        total = lower.count(q)
+        snippets: list[dict] = []
+        for i, line in enumerate(content.splitlines(), start=1):
+            if q in line.lower():
+                # Cap snippet length for the wire.
+                snippet = line.strip()
+                if len(snippet) > 240:
+                    snippet = snippet[:240] + "…"
+                snippets.append({"line": i, "text": snippet})
+                if len(snippets) >= SEARCH_SNIPPETS_PER_FILE:
+                    break
+        results.append({"path": path, "snippets": snippets, "total": total})
+    # Rank: higher total first, then path alphabetical.
+    results.sort(key=lambda r: (-r["total"], r["path"]))
+    return results[:SEARCH_MAX_RESULTS]
+
+
+# ─── HTTP server ───────────────────────────────────────────────────────────
+
 def serve_folder(target: Path, md_only: bool) -> None:
     files = list_files(target)
+    md_index = build_md_index(target, files)
     port = free_port()
     tree_meta = {"root": target.name, "files": files, "rootAbs": str(target)}
     tree_body = json.dumps(tree_meta).encode("utf-8")
@@ -118,13 +216,19 @@ def serve_folder(target: Path, md_only: bool) -> None:
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            # Strip query string for routing.
-            path = self.path.split("?", 1)[0]
+            split = urlsplit(self.path)
+            path = split.path
             if path == "/__mdbrowse__/tree.json":
                 self._send_bytes(tree_body, "application/json")
                 return
             if path == "/__mdbrowse__/index.html":
                 self._send_bytes(app_body, "text/html; charset=utf-8")
+                return
+            if path == "/__mdbrowse__/search":
+                qs = parse_qs(split.query)
+                q = (qs.get("q") or [""])[0]
+                body = json.dumps({"query": q, "results": search_index(md_index, q)})
+                self._send_bytes(body.encode("utf-8"), "application/json")
                 return
             return super().do_GET()
 
@@ -136,6 +240,7 @@ def serve_folder(target: Path, md_only: bool) -> None:
 
     print(f"mdbrowse: serving  {target}")
     print(f"mdbrowse: app at   {url}")
+    print(f"mdbrowse: indexed  {len(md_index)} markdown file(s) for content search")
     print(f"mdbrowse: Ctrl+C to stop")
 
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -159,6 +264,13 @@ def main() -> int:
     if args.path is None:
         flag = "0" if not md_only else "1"
         open_chrome(f"file://{APP_HTML}?mdOnly={flag}")
+        return 0
+
+    # GitHub repo? Clone first, then fall through to folder serving.
+    gh_url = github_clone_url(args.path)
+    if gh_url is not None:
+        target = clone_github(gh_url)
+        serve_folder(target, md_only)
         return 0
 
     target = Path(args.path).expanduser()

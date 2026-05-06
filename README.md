@@ -29,12 +29,16 @@ Double-click **`Open File Browser.command`** — it opens the app in Chrome (or 
 A `mdbrowse` command is symlinked into `/opt/homebrew/bin/mdbrowse`, so it works anywhere:
 
 ```bash
-mdbrowse                          # idle app, "Markdown only" defaults to ON
+mdbrowse                              # idle app, "Markdown only" defaults to ON
 mdbrowse vTax/containerize-executor   # serves the folder over a localhost HTTP
-                                     # server and opens the app pointed at it
-mdbrowse vTax -a                  # same, but show every file (not just .md)
-mdbrowse vTax/README.md           # render a single file directly in Chrome
+                                      # server and opens the app pointed at it
+mdbrowse vTax -a                      # same, but show every file (not just .md)
+mdbrowse vTax/README.md               # render a single file directly in Chrome
+mdbrowse agarwal-manav/mdbrowse       # shallow-clone a GitHub repo and serve it
+mdbrowse https://github.com/owner/repo
 ```
+
+In served-folder mode the toolbar shows a **"Search docs..."** box that does full-text search across every `.md` file (case-insensitive, with line snippets). Click any result to open the file at that line.
 
 For folders, `mdbrowse` spins up a tiny Python `http.server` rooted at the
 target dir, so the app can fetch files via HTTP without needing the manual
