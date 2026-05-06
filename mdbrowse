@@ -195,12 +195,23 @@ def search_index(index: dict[str, str], query: str) -> list[dict]:
 # ─── HTTP server ───────────────────────────────────────────────────────────
 
 def serve_folder(target: Path, md_only: bool) -> None:
-    files = list_files(target)
-    md_index = build_md_index(target, files)
     port = free_port()
-    tree_meta = {"root": target.name, "files": files, "rootAbs": str(target)}
-    tree_body = json.dumps(tree_meta).encode("utf-8")
     app_body = APP_HTML.read_bytes()
+
+    # Tree + md index are recomputed on demand so the Refresh button picks
+    # up newly-added files without restarting the server.
+    state_lock = threading.Lock()
+    state: dict = {"files": [], "md_index": {}}
+
+    def refresh_state() -> dict:
+        files = list_files(target)
+        md_index = build_md_index(target, files)
+        with state_lock:
+            state["files"] = files
+            state["md_index"] = md_index
+        return {"files": files, "md_index": md_index}
+
+    refresh_state()
 
     class MdbrowseHandler(http.server.SimpleHTTPRequestHandler):
         # Quiet the per-request stderr spam.
@@ -219,7 +230,9 @@ def serve_folder(target: Path, md_only: bool) -> None:
             split = urlsplit(self.path)
             path = split.path
             if path == "/__mdbrowse__/tree.json":
-                self._send_bytes(tree_body, "application/json")
+                fresh = refresh_state()
+                meta = {"root": target.name, "files": fresh["files"], "rootAbs": str(target)}
+                self._send_bytes(json.dumps(meta).encode("utf-8"), "application/json")
                 return
             if path == "/__mdbrowse__/index.html":
                 self._send_bytes(app_body, "text/html; charset=utf-8")
@@ -227,7 +240,9 @@ def serve_folder(target: Path, md_only: bool) -> None:
             if path == "/__mdbrowse__/search":
                 qs = parse_qs(split.query)
                 q = (qs.get("q") or [""])[0]
-                body = json.dumps({"query": q, "results": search_index(md_index, q)})
+                with state_lock:
+                    idx = state["md_index"]
+                body = json.dumps({"query": q, "results": search_index(idx, q)})
                 self._send_bytes(body.encode("utf-8"), "application/json")
                 return
             return super().do_GET()
@@ -240,8 +255,8 @@ def serve_folder(target: Path, md_only: bool) -> None:
 
     print(f"mdbrowse: serving  {target}")
     print(f"mdbrowse: app at   {url}")
-    print(f"mdbrowse: indexed  {len(md_index)} markdown file(s) for content search")
-    print(f"mdbrowse: Ctrl+C to stop")
+    print(f"mdbrowse: indexed  {len(state['md_index'])} markdown file(s) for content search")
+    print(f"mdbrowse: Ctrl+C to stop  (use the 🔄 button in the app to pick up new files)")
 
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
