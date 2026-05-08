@@ -667,7 +667,57 @@ def serve_app(initial: dict | None, md_only: bool) -> None:
             if split.path == "/__mdbrowse__/post-comment":
                 self._handle_post_comment()
                 return
+            if split.path == "/__mdbrowse__/submit-review":
+                self._handle_submit_review()
+                return
             self._send_json({"error": "not found"}, 404)
+
+        def _handle_submit_review(self) -> None:
+            ghctx = state["github_context"]
+            if not ghctx or not ghctx.get("prNumber"):
+                self._send_json({"error": "submit-review is only available in PR mode"}, 400)
+                return
+            body = self._read_json_body()
+            if body is None:
+                self._send_json({"error": "invalid JSON"}, 400)
+                return
+            event = (body.get("event") or "").upper()
+            review_body = (body.get("body") or "").strip()
+            if event not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
+                self._send_json({"error": "event must be APPROVE | REQUEST_CHANGES | COMMENT"}, 400)
+                return
+            if event in ("REQUEST_CHANGES", "COMMENT") and not review_body:
+                self._send_json({"error": f"review body is required for {event}"}, 400)
+                return
+            args = [
+                "gh", "api",
+                f"repos/{ghctx['owner']}/{ghctx['repo']}/pulls/{ghctx['prNumber']}/reviews",
+                "-X", "POST",
+                "-f", f"commit_id={ghctx['headRef']}",
+                "-f", f"event={event}",
+            ]
+            if review_body:
+                args += ["-f", f"body={review_body}"]
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            except subprocess.SubprocessError as e:
+                self._send_json({"error": f"gh api failed: {e}"}, 500)
+                return
+            if result.returncode != 0:
+                self._send_json({"error": (result.stderr or "gh api failed").strip()}, 502)
+                return
+            try:
+                payload = json.loads(result.stdout or "{}")
+            except json.JSONDecodeError:
+                self._send_json({"error": "could not parse gh api response"}, 502)
+                return
+            print(f"mdbrowse: submitted {event} review on PR #{ghctx['prNumber']}")
+            self._send_json({
+                "ok": True,
+                "event": event,
+                "htmlUrl": payload.get("html_url"),
+                "state": payload.get("state"),
+            })
 
         def _handle_load(self) -> None:
             body = self._read_json_body()

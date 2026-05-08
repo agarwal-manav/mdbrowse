@@ -275,6 +275,65 @@
     }
     .empty .hint { font-size: 13px; max-width: 420px; text-align: center; line-height: 1.6; }
 
+    /* ── Submit-review modal ── */
+    .modal-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: min(560px, 92vw);
+      max-height: 86vh;
+      display: flex; flex-direction: column;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    }
+    .modal .head {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal .head .title { font-weight: 600; font-size: 14px; }
+    .modal .head .close {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 20px; line-height: 1; padding: 0 4px;
+    }
+    .modal .body { padding: 14px 18px; }
+    .modal .body label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .modal textarea {
+      width: 100%; box-sizing: border-box;
+      min-height: 120px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border);
+      font: inherit; font-size: 13px; line-height: 1.5;
+      padding: 8px 10px; border-radius: 6px; resize: vertical;
+    }
+    .modal textarea:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(88,166,255,0.25);
+    }
+    .modal .actions {
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      display: flex; gap: 8px; align-items: center;
+    }
+    .modal .actions .err { color: var(--danger); font-size: 12px; flex: 1; }
+    .modal .actions button {
+      background: var(--panel2); color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 500;
+      border-radius: 6px; cursor: pointer;
+    }
+    .modal .actions button:hover { background: #30363d; border-color: var(--muted); }
+    .modal .actions button.approve { background: #238636; color: #fff; border-color: rgba(240,246,252,0.1); }
+    .modal .actions button.approve:hover { background: #2ea043; }
+    .modal .actions button.request-changes { background: #da3633; color: #fff; border-color: rgba(240,246,252,0.1); }
+    .modal .actions button.request-changes:hover { background: #f85149; }
+    .modal .actions button:disabled { opacity: 0.6; cursor: not-allowed; }
+
     /* ── Loading screen ── */
     @keyframes mdb-spin { to { transform: rotate(360deg); } }
     @keyframes mdb-pulse {
@@ -528,6 +587,7 @@
     <button id="refresh" hidden title="Re-scan the served folder for new/changed files">🔄 Refresh</button>
     <button id="open-on-github" hidden title="Open the current file on GitHub at this PR's head">↗ GitHub</button>
     <button id="toggle-mode" hidden title="Switch between rendered view and line-by-line source with inline review comments">💬 Comment mode</button>
+    <button id="submit-review" hidden title="Submit a PR review (Approve / Request changes / Comment)">✅ Submit review</button>
     <button id="toggle-width" title="Cycle reading width (Wide → Full → Narrow)">↔ Wide</button>
     <span class="root-name" id="root-name">No folder open</span>
     <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;">
@@ -1476,12 +1536,101 @@ document.getElementById('toggle-mode').addEventListener('click', async () => {
 
 function syncToggleButton() {
   const btn = document.getElementById('toggle-mode');
+  const review = document.getElementById('submit-review');
+  const isPR = serverContext && serverContext.github && serverContext.github.prNumber;
   if (!serverContext || !serverContext.github) {
     btn.hidden = true;
+    review.hidden = true;
     return;
   }
   btn.hidden = false;
   btn.textContent = viewMode === 'source' ? '📖 Rendered view' : '💬 Comment mode';
+  review.hidden = !isPR;
+}
+
+// ─── Submit-review modal (PR mode) ─────────────────────────────────────────
+document.getElementById('submit-review').addEventListener('click', () => {
+  if (!serverContext || !serverContext.github || !serverContext.github.prNumber) return;
+  openSubmitReviewModal();
+});
+
+function openSubmitReviewModal() {
+  const ctx = serverContext.github;
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="head">
+        <div class="title">Submit review on ${escapeHtml(ctx.owner + '/' + ctx.repo + '#' + ctx.prNumber)}</div>
+        <button class="close" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="body">
+        <label for="review-body">Review summary (optional for Approve, required for Request changes / Comment)</label>
+        <textarea id="review-body" placeholder="What did you check? Any blockers?"></textarea>
+      </div>
+      <div class="actions">
+        <span class="err"></span>
+        <button class="cancel" type="button">Cancel</button>
+        <button class="comment" type="button" data-event="COMMENT">💬 Comment</button>
+        <button class="request-changes" type="button" data-event="REQUEST_CHANGES">⛔ Request changes</button>
+        <button class="approve" type="button" data-event="APPROVE">✅ Approve</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const ta = backdrop.querySelector('textarea');
+  const errEl = backdrop.querySelector('.err');
+  const allBtns = backdrop.querySelectorAll('.actions button');
+  ta.focus();
+
+  function close() { backdrop.remove(); window.removeEventListener('keydown', onEsc); }
+  function onEsc(e) { if (e.key === 'Escape') close(); }
+  window.addEventListener('keydown', onEsc);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  backdrop.querySelector('.close').addEventListener('click', close);
+  backdrop.querySelector('.cancel').addEventListener('click', close);
+
+  backdrop.querySelectorAll('button[data-event]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const event = btn.dataset.event;
+      const reviewBody = ta.value.trim();
+      if (event !== 'APPROVE' && !reviewBody) {
+        errEl.textContent = 'A review summary is required for ' +
+          (event === 'COMMENT' ? 'Comment' : 'Request changes') + '.';
+        ta.focus();
+        return;
+      }
+      // Confirm Approve / Request changes — these notify and visibly mutate the PR.
+      if (event === 'APPROVE' && !confirm('Approve this PR? This sends an approval notification on GitHub.')) return;
+      if (event === 'REQUEST_CHANGES' && !confirm('Request changes on this PR? This blocks the PR and notifies the author.')) return;
+
+      allBtns.forEach(b => b.disabled = true);
+      errEl.textContent = '';
+      try {
+        const res = await fetch('/__mdbrowse__/submit-review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event, body: reviewBody }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          errEl.textContent = data.error || ('submit failed: ' + res.status);
+          allBtns.forEach(b => b.disabled = false);
+          return;
+        }
+        close();
+        // Soft confirmation banner.
+        const note = document.createElement('div');
+        note.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#238636;color:#fff;padding:10px 16px;border-radius:6px;font-size:13px;z-index:200;box-shadow:0 6px 24px rgba(0,0,0,0.4);';
+        note.innerHTML = `Review submitted (${escapeHtml(event)}). ` +
+          (data.htmlUrl ? `<a href="${escapeHtml(data.htmlUrl)}" target="_blank" rel="noopener" style="color:#fff;text-decoration:underline;">View on GitHub</a>` : '');
+        document.body.appendChild(note);
+        setTimeout(() => note.remove(), 6000);
+      } catch (err) {
+        errEl.textContent = err.message || String(err);
+        allBtns.forEach(b => b.disabled = false);
+      }
+    });
+  });
 }
 
 // ─── Open-on-GitHub toolbar button ─────────────────────────────────────────
