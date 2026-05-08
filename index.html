@@ -576,6 +576,8 @@
 <body>
 <div class="app">
   <div class="toolbar">
+    <button id="nav-back" title="Previous file (⌘[)" disabled style="padding-left:10px;padding-right:10px;">←</button>
+    <button id="nav-forward" title="Next file (⌘])" disabled style="padding-left:10px;padding-right:10px;">→</button>
     <button id="open-folder">📁 Open Folder</button>
     <button id="open-file">📄 Open File</button>
     <form id="load-form" style="display:flex;gap:6px;align-items:center;">
@@ -634,6 +636,10 @@ let serverContext = null;       // { github, prReviewComments } from tree.json
 let currentPath = null;         // path of the file currently in the viewer
 let currentText = null;         // raw text of the current file (for source-mode re-render)
 let viewMode = 'rendered';      // 'rendered' | 'source' — toggled via toolbar in PR mode
+// Browser-style file history: stack of served paths visited in this session.
+let navHistory = [];
+let navPos = -1;                // index of the currently-shown entry; -1 = none
+let isNavigating = false;       // true while replaying a back/forward (suppresses re-push)
 
 // Jira-style ticket pattern for auto-linking inside markdown.
 const JIRA_RE = /\b([A-Z][A-Z0-9]+-\d{1,6})\b/g;
@@ -836,6 +842,7 @@ function renderNode(node, isRoot = false) {
     name.className = 'name';
     name.textContent = node.name;
     row.appendChild(name);
+    if (node.servedPath !== undefined) row.dataset.servedPath = node.servedPath;
     li.appendChild(row);
 
     row.addEventListener('click', async (e) => {
@@ -857,6 +864,7 @@ function renderNode(node, isRoot = false) {
           displayPath = buildPath(node);
         }
         await renderFile(file, displayPath);
+        if (!isNavigating) pushNavHistory(displayPath);
       } catch (err) {
         showError(err);
       }
@@ -1479,6 +1487,7 @@ document.getElementById('load-form').addEventListener('submit', async (e) => {
 
   // Reset per-file viewer state immediately and show the loading screen.
   currentPath = null; selectedRow = null;
+  clearNavHistory();
   const { stage, foot } = describeLoad(spec);
   showLoadingScreen(spec, stage, foot);
   document.getElementById('root-name').textContent = '⏳ Loading ' + spec;
@@ -1503,6 +1512,63 @@ document.getElementById('load-form').addEventListener('submit', async (e) => {
     btn.disabled = false; btn.textContent = prev;
     input.disabled = false;
   }
+});
+
+// ─── File navigation history (browser-style back/forward) ─────────────────
+function pushNavHistory(path) {
+  if (!path) return;
+  if (navPos >= 0 && navHistory[navPos] === path) return;
+  navHistory = navHistory.slice(0, navPos + 1);
+  navHistory.push(path);
+  navPos = navHistory.length - 1;
+  syncNavButtons();
+}
+
+function navBack()    { if (navPos > 0)                       goToHistoryEntry(navPos - 1); }
+function navForward() { if (navPos < navHistory.length - 1)   goToHistoryEntry(navPos + 1); }
+
+function goToHistoryEntry(targetPos) {
+  const path = navHistory[targetPos];
+  if (!path) return;
+  const row = document.querySelector(`#tree .row.file[data-served-path="${cssEscape(path)}"]`);
+  if (!row) return;
+  navPos = targetPos;
+  isNavigating = true;
+  try { row.click(); } finally { isNavigating = false; }
+  syncNavButtons();
+}
+
+function cssEscape(s) {
+  // Minimal escape for use inside an attribute selector — quotes only.
+  return String(s).replace(/(["\\])/g, '\\$1');
+}
+
+function syncNavButtons() {
+  document.getElementById('nav-back').disabled = !(navPos > 0);
+  document.getElementById('nav-forward').disabled = !(navPos < navHistory.length - 1);
+}
+
+function clearNavHistory() {
+  navHistory = [];
+  navPos = -1;
+  syncNavButtons();
+}
+
+document.getElementById('nav-back').addEventListener('click', navBack);
+document.getElementById('nav-forward').addEventListener('click', navForward);
+
+// Keyboard: ⌘[ / ⌘] (Mac) and Alt+Left / Alt+Right (cross-platform).
+window.addEventListener('keydown', (e) => {
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === '[') {
+    e.preventDefault(); navBack(); return;
+  }
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === ']') {
+    e.preventDefault(); navForward(); return;
+  }
+  if (e.altKey && e.key === 'ArrowLeft')  { e.preventDefault(); navBack();    return; }
+  if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navForward(); return; }
 });
 
 // ─── Width toggle (Narrow → Wide → Full) ──────────────────────────────────
@@ -1826,6 +1892,7 @@ async function openServedPath(servedPath) {
     const name = servedPath.split('/').pop();
     const file = new File([blob], name, { type: blob.type });
     await renderFile(file, servedPath);
+    if (!isNavigating) pushNavHistory(servedPath);
   } catch (err) {
     showError(err);
   }
