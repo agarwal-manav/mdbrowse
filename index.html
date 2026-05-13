@@ -65,8 +65,8 @@
 
     /* ── Top toolbar ── */
     .toolbar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 10px 16px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 14px;
       background: var(--panel);
       border-bottom: 1px solid var(--border);
       flex: 0 0 auto;
@@ -75,7 +75,7 @@
       background: var(--panel2);
       color: var(--text);
       border: 1px solid var(--border);
-      padding: 5px 12px;
+      padding: 5px 10px;
       font: inherit; font-size: 13px; font-weight: 500;
       border-radius: 6px;
       cursor: pointer;
@@ -83,9 +83,15 @@
     }
     .toolbar button:hover { background: #30363d; border-color: var(--muted); }
     .toolbar button:active { background: var(--panel); }
+    .toolbar .icon-btn { padding: 5px 8px; min-width: 30px; }
+    .toolbar .sep {
+      width: 1px; align-self: stretch; background: var(--border);
+      margin: 2px 4px;
+    }
+    .toolbar .spacer { flex: 1 1 auto; min-width: 8px; }
     .toolbar .root-name {
       font-weight: 600; color: var(--accent);
-      margin-left: 8px; flex: 1; min-width: 0;
+      max-width: 240px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       font-size: 13px;
     }
@@ -93,7 +99,7 @@
       background: var(--bg); color: var(--text);
       border: 1px solid var(--border);
       padding: 5px 10px; border-radius: 6px; font: inherit; font-size: 13px;
-      width: 220px;
+      width: 180px;
     }
     .toolbar input[type="search"]:focus {
       outline: none; border-color: var(--accent);
@@ -576,28 +582,30 @@
 <body>
 <div class="app">
   <div class="toolbar">
-    <button id="nav-back" title="Previous file (⌘[)" disabled style="padding-left:10px;padding-right:10px;">←</button>
-    <button id="nav-forward" title="Next file (⌘])" disabled style="padding-left:10px;padding-right:10px;">→</button>
-    <button id="open-folder">📁 Open Folder</button>
-    <button id="open-file">📄 Open File</button>
+    <button id="nav-back" class="icon-btn" title="Previous file (⌘[)" disabled>←</button>
+    <button id="nav-forward" class="icon-btn" title="Next file (⌘])" disabled>→</button>
+    <span class="sep"></span>
+    <button id="open-folder" class="icon-btn" title="Open folder">📁</button>
+    <button id="open-file" class="icon-btn" title="Open file">📄</button>
     <form id="load-form" style="display:flex;gap:6px;align-items:center;">
-      <input type="text" id="load-input" placeholder="Load a PR / repo / path…"
+      <input type="text" id="load-input" placeholder="Load PR / repo / path…"
              title="Paste owner/repo, owner/repo#N, a github.com URL, or a local path"
-             style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:5px 10px;border-radius:6px;font:inherit;font-size:13px;width:280px;">
-      <button type="submit" id="load-btn">Load</button>
+             style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:5px 10px;border-radius:6px;font:inherit;font-size:13px;width:240px;">
     </form>
-    <button id="refresh" hidden title="Re-scan the served folder for new/changed files">🔄 Refresh</button>
-    <button id="open-on-github" hidden title="Open the current file on GitHub at this PR's head">↗ GitHub</button>
-    <button id="toggle-mode" hidden title="Switch between rendered view and line-by-line source with inline review comments">💬 Comment mode</button>
-    <button id="submit-review" hidden title="Submit a PR review (Approve / Request changes / Comment)">✅ Submit review</button>
-    <button id="toggle-width" title="Cycle reading width (Wide → Full → Narrow)">↔ Wide</button>
     <span class="root-name" id="root-name">No folder open</span>
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;">
+    <span class="spacer"></span>
+    <button id="refresh" class="icon-btn" hidden title="Re-scan the served folder for new/changed files">🔄</button>
+    <button id="open-on-github" class="icon-btn" hidden title="Open the current file on GitHub at this PR's head">↗</button>
+    <button id="toggle-mode" hidden title="Switch between rendered view and line-by-line source with inline review comments">💬 Source</button>
+    <button id="submit-review" hidden title="Submit a PR review (Approve / Request changes / Comment)">✅ Review</button>
+    <span class="sep"></span>
+    <button id="toggle-width" class="icon-btn" title="Cycle reading width (Wide → Full → Narrow)">↔</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;" title="Show only markdown files in the tree">
       <input type="checkbox" id="md-only" checked>
-      Markdown only
+      .md only
     </label>
-    <input type="search" id="filter" placeholder="Filter files...">
-    <input type="search" id="content-search" placeholder="Search docs..." title="Full-text search across markdown files (served-folder mode only)">
+    <input type="search" id="filter" placeholder="Filter files…" style="width:140px;">
+    <input type="search" id="content-search" placeholder="Search docs…" title="Full-text search across markdown files (served-folder mode only)" style="width:140px;">
     <span class="stat" id="stats"></span>
   </div>
   <div class="main">
@@ -1477,12 +1485,9 @@ document.getElementById('load-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (isLoading) return;
   const input = document.getElementById('load-input');
-  const btn = document.getElementById('load-btn');
   const spec = input.value.trim();
   if (!spec) return;
-  const prev = btn.textContent;
   isLoading = true;
-  btn.disabled = true; btn.textContent = 'Loading…';
   input.disabled = true;
 
   // Reset per-file viewer state immediately and show the loading screen.
@@ -1509,7 +1514,6 @@ document.getElementById('load-form').addEventListener('submit', async (e) => {
     showError(err);
   } finally {
     isLoading = false;
-    btn.disabled = false; btn.textContent = prev;
     input.disabled = false;
   }
 });
@@ -1573,7 +1577,7 @@ window.addEventListener('keydown', (e) => {
 
 // ─── Width toggle (Narrow → Wide → Full) ──────────────────────────────────
 const WIDTHS = ['narrow', 'wide', 'full'];
-const WIDTH_LABEL = { narrow: '↔ Narrow', wide: '↔ Wide', full: '↔ Full' };
+const WIDTH_LABEL = { narrow: '↔N', wide: '↔W', full: '↔F' };
 let currentWidth = (localStorage.getItem('mdbrowse:width') || 'wide');
 if (!WIDTHS.includes(currentWidth)) currentWidth = 'wide';
 applyWidth();
@@ -1610,7 +1614,7 @@ function syncToggleButton() {
     return;
   }
   btn.hidden = false;
-  btn.textContent = viewMode === 'source' ? '📖 Rendered view' : '💬 Comment mode';
+  btn.textContent = viewMode === 'source' ? '📖 Render' : '💬 Source';
   review.hidden = !isPR;
 }
 
